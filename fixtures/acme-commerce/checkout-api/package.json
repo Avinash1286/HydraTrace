@@ -1,0 +1,16 @@
+{
+  "name": "@acme/checkout-api",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "checkout-framework": "2.0.0",
+    "checkout-plugin": "1.0.0",
+    "shared-codec": "1.0.0"
+  },
+  "devDependencies": {
+    "dev-audit-kit": "1.0.0"
+  },
+  "optionalDependencies": {
+    "optional-metrics": "1.0.0"
+  }
+}

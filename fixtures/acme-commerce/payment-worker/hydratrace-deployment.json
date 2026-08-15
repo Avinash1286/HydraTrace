@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "organizationId": "acme-commerce",
+  "repositoryId": "acme-commerce/payment-worker",
+  "serviceId": "payment-worker",
+  "environment": "production",
+  "commitSha": "2222222222222222222222222222222222222222",
+  "startedAt": "2026-08-15T09:09:00.000Z",
+  "endedAt": null,
+  "lockfile": "package-lock.json"
+}

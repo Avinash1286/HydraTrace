@@ -1,0 +1,67 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    dependencies:
+      chart-core:
+        specifier: 1.0.0
+        version: 1.0.0
+      chart-wrapper:
+        specifier: 3.0.0
+        version: 3.0.0(chart-core@1.0.0)
+    devDependencies:
+      dashboard-test-kit:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+  chart-core@1.0.0:
+    resolution:
+      integrity: sha512-Y2hhcnQtY29yZS0xLjAuMC1maXh0dXJl
+
+  chart-wrapper@3.0.0:
+    resolution:
+      integrity: sha512-Y2hhcnQtd3JhcHBlci0zLjAuMC1maXh0dXJl
+    peerDependencies:
+      chart-core: ^1.0.0
+
+  compromised-helper@1.4.2:
+    resolution:
+      integrity: sha512-Y29tcHJvbWlzZWQtaGVscGVyLTEuNC4yLWZpeHR1cmU=
+
+  compromised-helper@1.4.3:
+    resolution:
+      integrity: sha512-Y29tcHJvbWlzZWQtaGVscGVyLTEuNC4zLWZpeHR1cmU=
+
+  dashboard-test-kit@1.0.0:
+    resolution:
+      integrity: sha512-ZGFzaGJvYXJkLXRlc3Qta2l0LTEuMC4wLWZpeHR1cmU=
+
+  optional-formatter@1.0.0:
+    resolution:
+      integrity: sha512-b3B0aW9uYWwtZm9ybWF0dGVyLTEuMC4wLWZpeHR1cmU=
+
+snapshots:
+  chart-core@1.0.0: {}
+
+  chart-wrapper@3.0.0(chart-core@1.0.0):
+    dependencies:
+      chart-core: 1.0.0
+      compromised-helper: 1.4.3
+    optionalDependencies:
+      optional-formatter: 1.0.0
+
+  compromised-helper@1.4.2: {}
+
+  compromised-helper@1.4.3: {}
+
+  dashboard-test-kit@1.0.0:
+    dependencies:
+      compromised-helper: 1.4.2
+
+  optional-formatter@1.0.0:
+    optional: true

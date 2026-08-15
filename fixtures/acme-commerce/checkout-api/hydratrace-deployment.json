@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "organizationId": "acme-commerce",
+  "repositoryId": "acme-commerce/checkout-api",
+  "serviceId": "checkout-api",
+  "environment": "production",
+  "commitSha": "1111111111111111111111111111111111111111",
+  "startedAt": "2026-08-15T09:04:00.000Z",
+  "endedAt": null,
+  "lockfile": "package-lock.json"
+}

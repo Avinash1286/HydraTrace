@@ -1,0 +1,12 @@
+{
+  "name": "@acme/analytics-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "chart-core": "1.0.0",
+    "chart-wrapper": "3.0.0"
+  },
+  "devDependencies": {
+    "dashboard-test-kit": "1.0.0"
+  }
+}

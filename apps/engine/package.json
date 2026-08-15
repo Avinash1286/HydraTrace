@@ -1,0 +1,15 @@
+{
+  "name": "@hydratrace/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hydratrace/domain": "workspace:*",
+    "@hydratrace/ecosystem-enrichment": "workspace:*",
+    "@hydratrace/graph-schema": "workspace:*",
+    "@hydratrace/hydradb-client": "workspace:*",
+    "@hydratrace/lockfile-parsers": "workspace:*",
+    "fastify": "5.12.0",
+    "zod": "4.4.3"
+  }
+}

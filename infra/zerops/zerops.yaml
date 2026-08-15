@@ -1,0 +1,98 @@
+zerops:
+  - setup: hydradbnode
+    run:
+      base: docker@latest
+      prepareCommands:
+        - docker image pull ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      envVariables:
+        CLOUD_PROVIDER: aws
+        AWS_ENDPOINT: ${hydratracegraph_apiUrl}
+        AWS_BUCKET_NAME: ${hydratracegraph_bucketName}
+        AWS_ACCESS_KEY_ID: ${hydratracegraph_accessKeyId}
+        AWS_SECRET_ACCESS_KEY: ${hydratracegraph_secretAccessKey}
+        AWS_DEFAULT_REGION: us-east-1
+        AWS_ALLOW_HTTP: "false"
+        AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
+        GRAPH_NAMESPACE: production
+        GRAPH_ID: default
+        GRAPH_DATA_PATH: production/slatedb-graph/data
+        GRAPH_CELL_ID: cell-0
+        GRAPH_CELLS: cell-0
+        GRAPH_NODE_ID: node-0
+        GRAPH_BOLT_NODE_ADDRESSES: node-0=hydradbnode:7687
+        GRAPH_ADVERTISED_BOLT_ADDR: hydradbnode:7687
+        GRAPH_ALLOW_PLAINTEXT: "true"
+        GRAPH_DATA_CACHE_DIR: /tmp/graph/cache
+        GRAPH_AUTH_TOKEN: ${graphAuthToken}
+        RUST_MIN_STACK: "33554432"
+      start: |
+        install -d -m 700 /home/zerops/hydradb
+        umask 077
+        printf '%s' "$GRAPH_AUTH_TOKEN" > /home/zerops/hydradb/auth-token
+        docker run --rm --network=host \
+          -v /home/zerops/hydradb/auth-token:/tmp/graph/auth-token:ro \
+          -e CLOUD_PROVIDER -e AWS_ENDPOINT -e AWS_BUCKET_NAME \
+          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
+          -e AWS_ALLOW_HTTP -e AWS_VIRTUAL_HOSTED_STYLE_REQUEST \
+          -e GRAPH_NAMESPACE -e GRAPH_ID -e GRAPH_DATA_PATH -e GRAPH_CELL_ID \
+          -e GRAPH_CELLS -e GRAPH_NODE_ID -e GRAPH_BOLT_NODE_ADDRESSES \
+          -e GRAPH_ADVERTISED_BOLT_ADDR -e GRAPH_ALLOW_PLAINTEXT \
+          -e GRAPH_DATA_CACHE_DIR -e RUST_MIN_STACK \
+          -e GRAPH_AUTH_TOKEN_FILE=/tmp/graph/auth-token \
+          ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      ports:
+        - port: 7687
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+          httpSupport: true
+        - port: 9090
+          protocol: TCP
+          httpSupport: true
+      healthCheck:
+        httpGet:
+          port: 9090
+          path: /readyz
+
+  - setup: hydradbindexer
+    run:
+      base: docker@latest
+      prepareCommands:
+        - docker image pull ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      envVariables:
+        CLOUD_PROVIDER: aws
+        AWS_ENDPOINT: ${hydratracegraph_apiUrl}
+        AWS_BUCKET_NAME: ${hydratracegraph_bucketName}
+        AWS_ACCESS_KEY_ID: ${hydratracegraph_accessKeyId}
+        AWS_SECRET_ACCESS_KEY: ${hydratracegraph_secretAccessKey}
+        AWS_DEFAULT_REGION: us-east-1
+        AWS_ALLOW_HTTP: "false"
+        AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
+        GRAPH_NAMESPACE: production
+        GRAPH_ID: default
+        GRAPH_DATA_PATH: production/slatedb-graph/data
+        GRAPH_CELLS: cell-0
+        GRAPH_INDEXER_ADMIN_ADDR: 0.0.0.0:9091
+        GRAPH_INDEXER_INTERVAL_MS: "5000"
+        GRAPH_INDEXER_RETAIN_PREVIOUS: "1"
+        GRAPH_INDEXER_BUILD_MODE: full
+        RUST_MIN_STACK: "33554432"
+      start: |
+        docker run --rm --network=host \
+          --entrypoint /usr/local/bin/graph-indexer \
+          -e CLOUD_PROVIDER -e AWS_ENDPOINT -e AWS_BUCKET_NAME \
+          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
+          -e AWS_ALLOW_HTTP -e AWS_VIRTUAL_HOSTED_STYLE_REQUEST \
+          -e GRAPH_NAMESPACE -e GRAPH_ID -e GRAPH_DATA_PATH -e GRAPH_CELLS \
+          -e GRAPH_INDEXER_ADMIN_ADDR -e GRAPH_INDEXER_INTERVAL_MS \
+          -e GRAPH_INDEXER_RETAIN_PREVIOUS -e GRAPH_INDEXER_BUILD_MODE \
+          -e RUST_MIN_STACK \
+          ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      ports:
+        - port: 9091
+          protocol: TCP
+          httpSupport: true
+      healthCheck:
+        httpGet:
+          port: 9091
+          path: /readyz

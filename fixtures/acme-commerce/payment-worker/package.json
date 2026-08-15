@@ -1,0 +1,9 @@
+{
+  "name": "@acme/payment-worker",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "queue-runtime": "4.0.0",
+    "telemetry-core": "3.2.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@hydratrace/domain": ["./packages/domain/src/index.ts"],
+      "@hydratrace/graph-schema": ["./packages/graph-schema/src/index.ts"],
+      "@hydratrace/lockfile-parsers": ["./packages/lockfile-parsers/src/index.ts"],
+      "@hydratrace/hydradb-client": ["./packages/hydradb-client/src/index.ts"],
+      "@hydratrace/ecosystem-enrichment": ["./packages/ecosystem-enrichment/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

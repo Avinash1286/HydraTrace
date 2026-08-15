@@ -1,0 +1,480 @@
+{
+  "formatVersion": 1,
+  "fixtureId": "acme-commerce",
+  "incidentId": "HT-FIXTURE-2026-0001",
+  "identityAssumptions": {
+    "ecosystem": "npm",
+    "rootResolutionIncluded": true,
+    "rootPackageVersionIncluded": true,
+    "packageIdentity": "normalized package name",
+    "packageVersionIdentity": "ecosystem + normalized package name + exact version",
+    "resolutionIdentity": "snapshot + source locator",
+    "npmSourceLocator": "package-lock packages map key; empty string is root",
+    "pnpmSourceLocator": "importer key for root or exact snapshots key for a package instance",
+    "productionFilter": "exclude any path whose root edge is devDependencies or whose instance is dev-only",
+    "peerEdgesIncluded": true,
+    "optionalEdgesIncluded": true
+  },
+  "globalCounts": {
+    "snapshotCount": 3,
+    "packageCount": 16,
+    "packageVersionCount": 18,
+    "resolutionCount": 21,
+    "dependencyEdgeCount": 21,
+    "containsEdgeCount": 21,
+    "instanceOfEdgeCount": 21,
+    "versionOfEdgeCount": 18
+  },
+  "repositories": [
+    {
+      "repositoryId": "acme-commerce/checkout-api",
+      "lockfile": "acme-commerce/checkout-api/package-lock.json",
+      "lockfileType": "package-lock",
+      "lockfileVersion": 3,
+      "counts": {
+        "packageCount": 9,
+        "packageVersionCount": 10,
+        "resolutionCount": 10,
+        "dependencyEdgeCount": 10,
+        "directDependencyEdgeCount": 5,
+        "devOnlyResolutionCount": 1,
+        "optionalResolutionCount": 1,
+        "peerResolutionCount": 1,
+        "warningCount": 0
+      },
+      "resolutions": [
+        {
+          "locator": "",
+          "name": "@acme/checkout-api",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": true
+        },
+        {
+          "locator": "node_modules/checkout-framework",
+          "name": "checkout-framework",
+          "version": "2.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/checkout-framework/node_modules/shared-codec",
+          "name": "shared-codec",
+          "version": "2.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/checkout-plugin",
+          "name": "checkout-plugin",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/compromised-helper",
+          "name": "compromised-helper",
+          "version": "1.4.2",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/dev-audit-kit",
+          "name": "dev-audit-kit",
+          "version": "1.0.0",
+          "dev": true,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/optional-metrics",
+          "name": "optional-metrics",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": true,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/peer-runtime",
+          "name": "peer-runtime",
+          "version": "1.1.0",
+          "dev": false,
+          "optional": false,
+          "peer": true,
+          "root": false
+        },
+        {
+          "locator": "node_modules/shared-codec",
+          "name": "shared-codec",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/telemetry-core",
+          "name": "telemetry-core",
+          "version": "3.2.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        }
+      ],
+      "edges": [
+        {
+          "from": "",
+          "to": "node_modules/checkout-framework",
+          "kind": "dependency"
+        },
+        {
+          "from": "",
+          "to": "node_modules/checkout-plugin",
+          "kind": "dependency"
+        },
+        {
+          "from": "",
+          "to": "node_modules/shared-codec",
+          "kind": "dependency"
+        },
+        {
+          "from": "",
+          "to": "node_modules/dev-audit-kit",
+          "kind": "devDependency"
+        },
+        {
+          "from": "",
+          "to": "node_modules/optional-metrics",
+          "kind": "optionalDependency"
+        },
+        {
+          "from": "node_modules/checkout-framework",
+          "to": "node_modules/checkout-framework/node_modules/shared-codec",
+          "kind": "dependency"
+        },
+        {
+          "from": "node_modules/checkout-framework",
+          "to": "node_modules/telemetry-core",
+          "kind": "dependency"
+        },
+        {
+          "from": "node_modules/checkout-plugin",
+          "to": "node_modules/peer-runtime",
+          "kind": "peerDependency"
+        },
+        {
+          "from": "node_modules/dev-audit-kit",
+          "to": "node_modules/compromised-helper",
+          "kind": "dependency"
+        },
+        {
+          "from": "node_modules/telemetry-core",
+          "to": "node_modules/compromised-helper",
+          "kind": "dependency"
+        }
+      ],
+      "expectedPaths": {
+        "affectedAll": [
+          [
+            "",
+            "node_modules/checkout-framework",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ],
+          [
+            "",
+            "node_modules/dev-audit-kit",
+            "node_modules/compromised-helper"
+          ]
+        ],
+        "affectedProduction": [
+          [
+            "",
+            "node_modules/checkout-framework",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ]
+        ],
+        "safeControl": []
+      }
+    },
+    {
+      "repositoryId": "acme-commerce/payment-worker",
+      "lockfile": "acme-commerce/payment-worker/package-lock.json",
+      "lockfileType": "package-lock",
+      "lockfileVersion": 2,
+      "counts": {
+        "packageCount": 4,
+        "packageVersionCount": 4,
+        "resolutionCount": 4,
+        "dependencyEdgeCount": 4,
+        "directDependencyEdgeCount": 2,
+        "devOnlyResolutionCount": 0,
+        "optionalResolutionCount": 0,
+        "peerResolutionCount": 0,
+        "warningCount": 0
+      },
+      "resolutions": [
+        {
+          "locator": "",
+          "name": "@acme/payment-worker",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": true
+        },
+        {
+          "locator": "node_modules/compromised-helper",
+          "name": "compromised-helper",
+          "version": "1.4.2",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/queue-runtime",
+          "name": "queue-runtime",
+          "version": "4.0.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        },
+        {
+          "locator": "node_modules/telemetry-core",
+          "name": "telemetry-core",
+          "version": "3.2.0",
+          "dev": false,
+          "optional": false,
+          "peer": false,
+          "root": false
+        }
+      ],
+      "edges": [
+        {
+          "from": "",
+          "to": "node_modules/queue-runtime",
+          "kind": "dependency"
+        },
+        {
+          "from": "",
+          "to": "node_modules/telemetry-core",
+          "kind": "dependency"
+        },
+        {
+          "from": "node_modules/queue-runtime",
+          "to": "node_modules/telemetry-core",
+          "kind": "dependency"
+        },
+        {
+          "from": "node_modules/telemetry-core",
+          "to": "node_modules/compromised-helper",
+          "kind": "dependency"
+        }
+      ],
+      "expectedPaths": {
+        "affectedAll": [
+          [
+            "",
+            "node_modules/queue-runtime",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ],
+          [
+            "",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ]
+        ],
+        "affectedProduction": [
+          [
+            "",
+            "node_modules/queue-runtime",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ],
+          [
+            "",
+            "node_modules/telemetry-core",
+            "node_modules/compromised-helper"
+          ]
+        ],
+        "safeControl": []
+      }
+    },
+    {
+      "repositoryId": "acme-commerce/analytics-dashboard",
+      "lockfile": "acme-commerce/analytics-dashboard/pnpm-lock.yaml",
+      "lockfileType": "pnpm-lock",
+      "lockfileVersion": "9.0",
+      "counts": {
+        "packageCount": 6,
+        "packageVersionCount": 7,
+        "resolutionCount": 7,
+        "dependencyEdgeCount": 7,
+        "directDependencyEdgeCount": 3,
+        "devOnlyResolutionCount": 2,
+        "optionalResolutionCount": 1,
+        "peerContextResolutionCount": 1,
+        "peerDependencyEdgeCount": 1,
+        "warningCount": 0
+      },
+      "resolutions": [
+        {
+          "locator": ".",
+          "packageKey": null,
+          "name": "@acme/analytics-dashboard",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peerContext": false,
+          "root": true
+        },
+        {
+          "locator": "chart-core@1.0.0",
+          "packageKey": "chart-core@1.0.0",
+          "name": "chart-core",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": false,
+          "peerContext": false,
+          "root": false
+        },
+        {
+          "locator": "chart-wrapper@3.0.0(chart-core@1.0.0)",
+          "packageKey": "chart-wrapper@3.0.0",
+          "name": "chart-wrapper",
+          "version": "3.0.0",
+          "dev": false,
+          "optional": false,
+          "peerContext": true,
+          "root": false
+        },
+        {
+          "locator": "compromised-helper@1.4.2",
+          "packageKey": "compromised-helper@1.4.2",
+          "name": "compromised-helper",
+          "version": "1.4.2",
+          "dev": true,
+          "optional": false,
+          "peerContext": false,
+          "root": false
+        },
+        {
+          "locator": "compromised-helper@1.4.3",
+          "packageKey": "compromised-helper@1.4.3",
+          "name": "compromised-helper",
+          "version": "1.4.3",
+          "dev": false,
+          "optional": false,
+          "peerContext": false,
+          "root": false
+        },
+        {
+          "locator": "dashboard-test-kit@1.0.0",
+          "packageKey": "dashboard-test-kit@1.0.0",
+          "name": "dashboard-test-kit",
+          "version": "1.0.0",
+          "dev": true,
+          "optional": false,
+          "peerContext": false,
+          "root": false
+        },
+        {
+          "locator": "optional-formatter@1.0.0",
+          "packageKey": "optional-formatter@1.0.0",
+          "name": "optional-formatter",
+          "version": "1.0.0",
+          "dev": false,
+          "optional": true,
+          "peerContext": false,
+          "root": false
+        }
+      ],
+      "edges": [
+        {
+          "from": ".",
+          "to": "chart-core@1.0.0",
+          "kind": "dependency"
+        },
+        {
+          "from": ".",
+          "to": "chart-wrapper@3.0.0(chart-core@1.0.0)",
+          "kind": "dependency"
+        },
+        {
+          "from": ".",
+          "to": "dashboard-test-kit@1.0.0",
+          "kind": "devDependency"
+        },
+        {
+          "from": "chart-wrapper@3.0.0(chart-core@1.0.0)",
+          "to": "chart-core@1.0.0",
+          "kind": "peerDependency"
+        },
+        {
+          "from": "chart-wrapper@3.0.0(chart-core@1.0.0)",
+          "to": "compromised-helper@1.4.3",
+          "kind": "dependency"
+        },
+        {
+          "from": "chart-wrapper@3.0.0(chart-core@1.0.0)",
+          "to": "optional-formatter@1.0.0",
+          "kind": "optionalDependency"
+        },
+        {
+          "from": "dashboard-test-kit@1.0.0",
+          "to": "compromised-helper@1.4.2",
+          "kind": "dependency"
+        }
+      ],
+      "expectedPaths": {
+        "affectedAll": [
+          [
+            ".",
+            "dashboard-test-kit@1.0.0",
+            "compromised-helper@1.4.2"
+          ]
+        ],
+        "affectedProduction": [],
+        "safeControl": [
+          [
+            ".",
+            "chart-wrapper@3.0.0(chart-core@1.0.0)",
+            "compromised-helper@1.4.3"
+          ]
+        ]
+      }
+    }
+  ],
+  "blastRadiusExpectations": {
+    "affectedPackage": "compromised-helper",
+    "affectedVersion": "1.4.2",
+    "safeVersion": "1.4.3",
+    "productionAffectedRepositoryIds": [
+      "acme-commerce/checkout-api",
+      "acme-commerce/payment-worker"
+    ],
+    "productionUnaffectedRepositoryIds": [
+      "acme-commerce/analytics-dashboard"
+    ],
+    "productionAffectedPathCount": 3,
+    "allEnvironmentAffectedPathCount": 5,
+    "safeControlPathCount": 1
+  }
+}

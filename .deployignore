@@ -1,0 +1,8 @@
+/node_modules
+/.git
+/.cache
+/coverage
+/infra/local/data
+/infra/local/secrets
+/.env
+/.env.*

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "organizationId": "acme-commerce",
+  "repositoryId": "acme-commerce/analytics-dashboard",
+  "serviceId": "analytics-dashboard",
+  "environment": "production",
+  "commitSha": "3333333333333333333333333333333333333333",
+  "startedAt": "2026-08-15T09:00:00.000Z",
+  "endedAt": null,
+  "lockfile": "pnpm-lock.yaml"
+}

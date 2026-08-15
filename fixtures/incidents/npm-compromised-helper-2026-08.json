@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "fictional": true,
+  "id": "HT-FIXTURE-2026-0001",
+  "ecosystem": "npm",
+  "packageName": "compromised-helper",
+  "affectedVersions": [
+    "1.4.2"
+  ],
+  "knownSafeVersions": [
+    "1.4.3"
+  ],
+  "startsAt": "2026-08-15T09:02:00.000Z",
+  "endsAt": null,
+  "source": "hydratrace-fixture",
+  "confidence": "confirmed",
+  "summary": "Fictional exact-version incident used only for deterministic tests."
+}
