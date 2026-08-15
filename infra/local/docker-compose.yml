@@ -1,12 +1,44 @@
 name: hydratrace-local
 
+x-hydradb-object-store: &hydradb-object-store
+  CLOUD_PROVIDER: aws
+  AWS_BUCKET_NAME: hydratrace-local
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ENDPOINT: http://minio:9000
+  AWS_ALLOW_HTTP: "true"
+  AWS_ACCESS_KEY_ID: hydratrace-local
+  AWS_SECRET_ACCESS_KEY: hydratrace-local-secret-change-me
+
 services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: hydratrace-local
+      MINIO_ROOT_PASSWORD: hydratrace-local-secret-change-me
+    volumes:
+      - ./data/minio:/data
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    restart: "no"
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: hydratrace-local
+      MINIO_ROOT_PASSWORD: hydratrace-local-secret-change-me
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 1; done
+        mc mb --ignore-existing local/hydratrace-local
+
   hydradb-node:
     image: ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
     restart: unless-stopped
     environment:
-      CLOUD_PROVIDER: local
-      LOCAL_PATH: /data/store
+      <<: *hydradb-object-store
       GRAPH_NAMESPACE: development
       GRAPH_ID: default
       GRAPH_CELL_ID: cell-0
@@ -23,17 +55,18 @@ services:
       - "127.0.0.1:8443:8443"
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./data/store:/data/store
       - ./data/cache:/data/cache
       - ./secrets/auth-token:/data/auth-token:ro
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
 
   hydradb-indexer:
     image: ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/graph-indexer"]
     environment:
-      CLOUD_PROVIDER: local
-      LOCAL_PATH: /data/store
+      <<: *hydradb-object-store
       GRAPH_NAMESPACE: development
       GRAPH_ID: default
       GRAPH_CELLS: cell-0
@@ -46,7 +79,9 @@ services:
     ports:
       - "127.0.0.1:9091:9091"
     volumes:
-      - ./data/store:/data/store
       - ./data/indexer-cache:/data/indexer-cache
     depends_on:
-      - hydradb-node
+      minio-init:
+        condition: service_completed_successfully
+      hydradb-node:
+        condition: service_started

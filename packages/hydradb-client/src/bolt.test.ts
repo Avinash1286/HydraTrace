@@ -47,6 +47,14 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
     const cypher = captured.map(({ cypher: query }) => query).join("\n");
     expect(cypher).toContain("UNWIND $rows AS row\nMERGE (n {id: row.vertex})");
     expect(cypher).toContain("MERGE (from)-[r:DEPENDS_ON_INSTANCE");
+    expect(cypher).toContain(
+      "SET r.hydratraceStableId = row.relationship_vertex",
+    );
+    expect(cypher).toContain(
+      "WHERE r.hydratraceStableId = $id0 OR r.hydratraceStableId = $id1",
+    );
+    expect(cypher).toContain("RETURN r.hydratraceStableId AS id");
+    expect(cypher).not.toContain("RETURN r.id AS id");
     expect(cypher).not.toMatch(/\bIN\b|labels\(|properties\(|type\(|\+=/);
 
     const nodeWrite = captured.find(({ cypher: query }) =>
@@ -60,7 +68,7 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
     expect(isInt(rows?.[0]?.observedAt)).toBe(true);
   });
 
-  it("uses SPpaths and hydrates IDs from lossless Bolt identities", async () => {
+  it("uses SPpaths and hydrates canonical IDs from lossless Bolt values", async () => {
     const fixture = createHydraDbSmokeFixture();
     const captured: CapturedQuery[] = [];
     const path = boltPath(
@@ -128,12 +136,12 @@ function boltPath(
       throw new Error("invalid path fixture");
     }
     const relationship = new Relationship(
-      int(id),
+      int(index + 1),
       start.identity,
       end.identity,
       "DEPENDS_ON_INSTANCE",
-      {},
-      id,
+      { hydratraceStableId: int(id), id: int(id) },
+      String(index + 1),
       start.elementId,
       end.elementId,
     );

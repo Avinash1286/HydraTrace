@@ -43,6 +43,12 @@ export interface HydraDbConnectionOptions {
   consistency?: "causal" | "strong";
 }
 
+// HydraDB v0.1.1 reserves `id` as the relationship's internal identity when
+// writing, but its row-query executor cannot project or predicate on `r.id`.
+// Mirror the canonical ID into ordinary relationship metadata for lossless,
+// batched reads while retaining `id` for MERGE identity and path hydration.
+const RELATIONSHIP_STABLE_ID_PROPERTY = "hydratraceStableId";
+
 export function hydraDbConnectionOptionsFromEnv(
   environment: NodeJS.ProcessEnv = process.env,
 ): HydraDbConnectionOptions {
@@ -270,8 +276,14 @@ export class HydraDbGraphStore implements GraphStore {
       ];
       const relationshipIds: StableId[] = [];
       for (const segment of hydrated.segments) {
+        const relationshipStableId =
+          segment.relationship.properties[RELATIONSHIP_STABLE_ID_PROPERTY] ??
+          segment.relationship.properties.id;
         relationshipIds.push(
-          stableIdValue(segment.relationship.identity, "path relationship id"),
+          stableIdValue(
+            relationshipStableId,
+            "path relationship canonical id metadata",
+          ),
         );
         nodeIds.push(stableIdValue(segment.end.identity, "path node id"));
       }
@@ -292,7 +304,7 @@ export class HydraDbGraphStore implements GraphStore {
     const result = await this.#run(
       [
         `MATCH (n:${label})`,
-        whereIds("n", ids.length),
+        whereIds("n.id", ids.length),
         `RETURN n.id AS id${propertyProjection("n", keys)}`,
       ].join("\n"),
       idParameters(ids),
@@ -314,8 +326,8 @@ export class HydraDbGraphStore implements GraphStore {
     const result = await this.#run(
       [
         `MATCH (from:${fromLabel})-[r:${type}]->(to:${toLabel})`,
-        whereIds("r", ids.length),
-        `RETURN r.id AS id, from.id AS fromId, to.id AS toId${propertyProjection("r", keys)}`,
+        whereIds(`r.${RELATIONSHIP_STABLE_ID_PROPERTY}`, ids.length),
+        `RETURN r.${RELATIONSHIP_STABLE_ID_PROPERTY} AS id, from.id AS fromId, to.id AS toId${propertyProjection("r", keys)}`,
       ].join("\n"),
       idParameters(ids),
     );
@@ -369,12 +381,15 @@ export class HydraDbGraphStore implements GraphStore {
         NodeLabel,
       ];
       for (const batch of batches(group.records, this.#batchSize)) {
-        const setters = group.keys.map((key) => `r.${key} = row.${key}`);
+        const setters = [
+          `r.${RELATIONSHIP_STABLE_ID_PROPERTY} = row.relationship_vertex`,
+          ...group.keys.map((key) => `r.${key} = row.${key}`),
+        ];
         const cypher = [
           "UNWIND $rows AS row",
           `MATCH (from:${fromLabel} {id: row.source_vertex}), (to:${toLabel} {id: row.destination_vertex})`,
           `MERGE (from)-[r:${type} {id: row.relationship_vertex}]->(to)`,
-          ...(setters.length === 0 ? [] : [`SET ${setters.join(", ")}`]),
+          `SET ${setters.join(", ")}`,
         ].join("\n");
         await this.#run(cypher, {
           rows: batch.map((relationship) => ({
@@ -603,11 +618,11 @@ function databasePropertyValue(value: unknown): unknown {
   return typeof value === "number" && Number.isInteger(value) ? int(value) : value;
 }
 
-function whereIds(binding: string, count: number): string {
+function whereIds(property: string, count: number): string {
   if (count < 1) throw new Error("A HydraDB ID read batch must not be empty");
   return `WHERE ${Array.from(
     { length: count },
-    (_, index) => `${binding}.id = $id${index}`,
+    (_, index) => `${property} = $id${index}`,
   ).join(" OR ")}`;
 }
 
