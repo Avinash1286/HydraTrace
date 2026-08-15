@@ -15,6 +15,7 @@ Completed locally:
 - deployment-manifest normalization;
 - OSV querybatch pagination, full-record retrieval, and content-addressed caching;
 - Fastify health, readiness, exact lockfile-ingestion, and OSV endpoints;
+- Vercel Git deployments with typecheck, test, and fixture gates;
 - pinned local and Zerops HydraDB node/indexer configurations.
 
 Reproducible checks:
@@ -32,6 +33,8 @@ Infrastructure-dependent gate:
 ```
 
 That gate cannot run until Docker Desktop is installed and started. The equivalent Zerops gate requires the user's Zerops project, private Object Storage service, and secret configuration. A listening port or readiness response does not count as completion; persistence, relationship-specific indexing, and the exact three-hop path must all pass.
+
+Vercel deploys the Fastify engine as a previewable Function and replaces the removed GitHub Actions workflow. Until Vercel has a secure route to the private HydraDB service, those deployments use the non-durable in-memory reference store and are not evidence of production graph persistence. See `docs/vercel.md`.
 
 ## Not part of this milestone
 

@@ -1,6 +1,6 @@
 import { InMemoryGraphStore } from "@hydratrace/hydradb-client";
 import { describe, expect, it } from "vitest";
-import { buildEngine } from "./app.js";
+import { buildEngine } from "./engine.js";
 
 describe("engine ingestion API", () => {
   it("ingests an exact lockfile and makes a repeated request idempotent", async () => {

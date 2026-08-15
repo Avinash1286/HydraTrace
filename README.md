@@ -17,6 +17,7 @@ This repository currently implements the foundation and exact-ingestion slice:
 - Node.js 24 or newer
 - pnpm 10.33.0
 - A reachable HydraDB instance for the graph smoke test
+- A Vercel account for preview and production deployments
 
 ## Local verification
 
@@ -34,6 +35,14 @@ pnpm smoke:hydradb
 ```
 
 See `infra/local/README.md` for the persistence-and-indexing gate that must be completed before application features are considered production-ready.
+
+## Vercel deployments
+
+The Fastify engine uses Vercel's native Git integration; this repository intentionally has no GitHub Actions workflow. Vercel runs the same typecheck, test, and fixture gates through `apps/engine/package.json` before bundling each deployment.
+
+The Vercel project root is `apps/engine`, with source files outside that directory enabled for the workspace packages. See `docs/vercel.md` for linking, deployment, and HydraDB connectivity boundaries.
+
+Production engine: <https://hydratrace-engine.vercel.app>
 
 ## Security
 
