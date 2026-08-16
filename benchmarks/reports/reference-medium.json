@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-08-16T17:44:49.603Z",
+  "dataset": {
+    "seed": 42,
+    "profile": "medium",
+    "nodes": 100000,
+    "edges": 400000,
+    "resolutionInstances": 33333
+  },
+  "environment": {
+    "platform": "win32",
+    "implementation": "InMemoryGraphStore reference",
+    "nodeVersion": "v24.15.0"
+  },
+  "import": {
+    "milliseconds": 7367.05,
+    "recordsPerSecond": 67870,
+    "nodesCreated": 100000,
+    "relationshipsCreated": 400000
+  },
+  "boundedPathQuery": {
+    "depth": 1,
+    "runs": 20,
+    "coldMilliseconds": 457.09,
+    "p50Milliseconds": 458.97,
+    "p95Milliseconds": 516.64,
+    "paths": 1
+  },
+  "memory": {
+    "engineRssBytes": 1299742720
+  },
+  "notMeasured": [
+    "HydraDB node/indexer memory",
+    "index build time",
+    "storage size",
+    "strong-versus-causal latency"
+  ]
+}

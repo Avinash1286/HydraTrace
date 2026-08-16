@@ -3,7 +3,31 @@
 Measurements must identify the implementation under test. Reference-store numbers
 are not presented as HydraDB performance.
 
-## 2026-08-16 reference graph run
+## 2026-08-16 generated reference profiles
+
+The committed reports use the exact project-plan sizes and fixed seed 42. They
+measure the in-process correctness store only; they are not HydraDB claims.
+
+| Profile | Nodes | Edges | Import | Throughput | Query p50 | Query p95 | RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Small | 10,000 | 40,000 | 547.77 ms | 91,280 records/s | 20.59 ms | 52.01 ms | 257,589,248 B |
+| Medium | 100,000 | 400,000 | 7,367.05 ms | 67,870 records/s | 458.97 ms | 516.64 ms | 1,299,742,720 B |
+| Large | 250,000 | 1,000,000 | 20,097.85 ms | 62,196 records/s | 1,316.76 ms | 1,450.87 ms | 2,852,253,696 B |
+
+Machine-readable evidence:
+
+- `benchmarks/reports/reference-small.json`
+- `benchmarks/reports/reference-medium.json`
+- `benchmarks/reports/reference-large.json`
+- `benchmarks/reports/hydradb-local-100.json`
+
+Reproduce a profile with:
+
+```powershell
+pnpm benchmark -- --profile=large --report=benchmarks/reports/reference-large.json
+```
+
+## Earlier 10,000-resolution reference run
 
 Command: `pnpm benchmark -- 10000`
 

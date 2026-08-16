@@ -97,6 +97,7 @@ export interface NormalizedSnapshot {
     sourceRef: string;
     parserVersion: string;
     createdAt: number;
+    validUntil?: number;
   };
   packages: NormalizedPackageVersion[];
   resolutions: NormalizedResolution[];

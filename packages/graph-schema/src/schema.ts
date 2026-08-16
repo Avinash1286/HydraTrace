@@ -20,6 +20,8 @@ export const NODE_LABELS = [
   "RuntimeObservation",
   "Evidence",
   "RemediationCandidate",
+  "RemediationRun",
+  "RemediationVerification",
 ] as const;
 
 export type NodeLabel = (typeof NODE_LABELS)[number];
@@ -132,18 +134,70 @@ export interface NodePropertiesByLabel {
     modifiedAt?: number;
   };
   IncidentWindow: {
-    startsAt: number;
-    endsAt: number;
+    startsAt?: number;
+    endsAt?: number;
     source: string;
     confidence: number;
+    ecosystem: "npm";
+    packageName: string;
+    normalizedPackageName: string;
+    affectedVersionsJson: string;
+    environmentsJson: string;
+    advisoryId?: string;
+    advisoryPublishedAt?: number;
+    advisoryWithdrawnAt?: number;
+    packagePublishedAt?: number;
+    windowSource: string;
+    severityScore: number;
+    trustContextScore: number;
+    createdAt: number;
   };
   Maintainer: { username: string; emailHash?: string; emailDomain?: string };
   Infrastructure: { type: string; value: string };
   SourceModule: { filePath: string; language: string; contentHash: string };
   EntryPoint: { type: string; command: string };
-  RuntimeObservation: { runId: string; observedAt: number; source: string };
-  Evidence: { type: string; sourceRef: string; sha256: string; parserVersion: string };
+  RuntimeObservation: {
+    runId: string;
+    observedAt: number;
+    source: string;
+    snapshotId: StableId;
+    deploymentId?: StableId;
+    packageName: string;
+    version: string;
+    command: string;
+    loadCount: number;
+  };
+  Evidence: {
+    type: string;
+    sourceRef: string;
+    sha256: string;
+    parserVersion: string;
+    snapshotId: StableId;
+    packageName: string;
+    version?: string;
+    level: number;
+    observedAt: number;
+    evidenceRefsJson: string;
+    detailsJson: string;
+  };
   RemediationCandidate: { fromVersion: string; toVersion: string; cost: number };
+  RemediationRun: {
+    incidentId: StableId;
+    createdAt: number;
+    beforePathIdsJson: string;
+    solutionJson: string;
+    status: string;
+  };
+  RemediationVerification: {
+    runId: StableId;
+    createdAt: number;
+    level: string;
+    snapshotIdsJson: string;
+    remainingPathCount: number;
+    passed: boolean;
+    message: string;
+    status: string;
+  };
 }
 
 export interface RelationshipEndpoints {

@@ -1,5 +1,72 @@
 import { mutation, query } from "./_generated/server.js";
 import { v } from "convex/values";
+import { internal } from "./_generated/api.js";
+
+export const schedule = mutation({
+  args: {
+    stableId: v.string(),
+    idempotencyKey: v.string(),
+    repositoryId: v.string(),
+    commitSha: v.string(),
+    uploadId: v.id("uploads"),
+    sourceRef: v.string(),
+    observedAt: v.number(),
+    deploymentManifest: v.optional(v.string()),
+    callbackUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.query("scans")
+      .withIndex("by_idempotency", (q) => q.eq("idempotencyKey", args.idempotencyKey))
+      .unique();
+    if (existing !== null) return { scanId: existing._id, created: false };
+    const upload = await ctx.db.get(args.uploadId);
+    if (upload === null || upload.expiresAt < Date.now()) throw new Error("Scan upload was not found or has expired");
+    const now = Date.now();
+    const scanId = await ctx.db.insert("scans", {
+      stableId: args.stableId,
+      idempotencyKey: args.idempotencyKey,
+      repositoryId: args.repositoryId,
+      commitSha: args.commitSha,
+      stage: "QUEUED",
+      currentStage: "QUEUED",
+      progress: 0,
+      attempt: 0,
+      uploadId: args.uploadId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("scanEvents", { scanId, sequence: 0, stage: "QUEUED", at: now, message: "Scan accepted by durable scheduler" });
+    const jobId = await ctx.db.insert("jobs", {
+      scanId,
+      type: "repository_scan",
+      status: "QUEUED",
+      attempt: 0,
+      availableAt: now,
+      signature: "hmac-sha256",
+      idempotencyKey: args.idempotencyKey,
+      callbackUrl: args.callbackUrl,
+      dispatchPayload: {
+        sourceRef: args.sourceRef,
+        repositoryId: args.repositoryId,
+        commitSha: args.commitSha,
+        observedAt: args.observedAt,
+        ...(args.deploymentManifest === undefined ? {} : { deploymentManifest: args.deploymentManifest }),
+      },
+    });
+    await ctx.db.insert("jobEvents", { jobId, sequence: 0, state: "QUEUED", message: "Job queued", at: now, traceId: args.idempotencyKey });
+    const scheduledFunctionId = await ctx.scheduler.runAfter(0, internal.scheduler.dispatchJob, { jobId });
+    await ctx.db.patch(jobId, { scheduledFunctionId });
+    await ctx.db.insert("auditEvents", {
+      actor: "user",
+      action: "scan.schedule",
+      targetType: "scan",
+      targetId: args.stableId,
+      traceId: args.idempotencyKey,
+      at: now,
+    });
+    return { scanId, jobId, created: true };
+  },
+});
 
 export const create = mutation({
   args: { stableId: v.string(), idempotencyKey: v.string(), repositoryId: v.string(), commitSha: v.string() },

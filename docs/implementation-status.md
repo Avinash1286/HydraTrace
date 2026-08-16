@@ -8,19 +8,21 @@
 - safe remediation simulation, set cover, before/after diff, strong zero-path verification;
 - OSV, deps.dev, and npm metadata clients with bounded caches;
 - CLI, Markdown/JSON/SARIF reports, grounded copilot, deterministic fallback;
-- Convex development and production deployments with durable scan events;
+- Convex development and production deployments with Storage uploads, signed dispatch,
+  ordered callbacks, leases, watchdog reclaim, and five-attempt retry scheduling;
 - Next.js dashboard and Fastify engine production deployments on Vercel;
 - live pinned HydraDB/MinIO/indexer persistence and strong-read gate;
-- deterministic 10k reference benchmark and live HydraDB benchmark.
+- exact Small/Medium/Large reference benchmarks and a separate live HydraDB control.
 
 Verification snapshot:
 
 ```text
-pnpm verify         19 files / 53 tests passed
+pnpm verify         22 files / 84 tests passed
 pnpm scan:fixture   3 snapshots, 72 nodes, 102 relationships, retry 0/0
 pnpm gate:hydradb   persistence, idempotency, indexer, restart, strong path passed
-Vercel              web + engine HTTP 200; production scan completed
-Convex              production scan returned 7 durable ordered events
+Vercel              web + engine + /system HTTP 200; rendered workflow checked
+Convex              production Storage scan completed with 9 signed progress events
+Benchmark           250,000 nodes / 1,000,000 edges reference profile completed
 ```
 
 ## Account-owned activation remaining

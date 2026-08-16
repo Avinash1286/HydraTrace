@@ -20,6 +20,7 @@ export function analyzeStaticImports(input: StaticAnalysisInput): StaticAnalysis
   const visited = new Set<string>();
   const packages = new Map<string, { importers: Set<string>; specifiers: Set<string>; refs: Set<string> }>();
   const unknownExpressions: Array<{ file: string; expression: string; evidenceRef: string }> = [];
+  const moduleEdges: Array<{ from: string; to: string }> = [];
 
   while (pending.length > 0) {
     const path = pending.shift();
@@ -38,7 +39,10 @@ export function analyzeStaticImports(input: StaticAnalysisInput): StaticAnalysis
       if (specifier === undefined || isNodeBuiltin(specifier)) continue;
       if (isRelativeSpecifier(specifier)) {
         const resolved = resolveRelative(file.path, specifier, files);
-        if (resolved !== undefined && !visited.has(resolved)) pending.push(resolved);
+        if (resolved !== undefined) {
+          moduleEdges.push({ from: file.path, to: resolved });
+          if (!visited.has(resolved)) pending.push(resolved);
+        }
         continue;
       }
       const packageName = packageNameFromSpecifier(specifier);
@@ -66,6 +70,9 @@ export function analyzeStaticImports(input: StaticAnalysisInput): StaticAnalysis
     repositoryId: input.repositoryId,
     commitSha: input.commitSha,
     analyzedFiles: [...visited].sort(),
+    entrypoints: input.entrypoints.map(normalizePath).sort(),
+    moduleEdges: [...new Map(moduleEdges.map((edge) => [`${edge.from}\0${edge.to}`, edge])).values()]
+      .sort((left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to)),
     unreachableFiles: [...files.keys()].filter((path) => !visited.has(path)).sort(),
     packages: publicPackages,
     unknownDynamicBehavior: unknownExpressions.length > 0,

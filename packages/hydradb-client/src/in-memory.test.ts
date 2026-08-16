@@ -36,6 +36,29 @@ describe("InMemoryGraphStore", () => {
     expect(result.orderedPath).toEqual(fixture.expectedPath);
   });
 
+  it("selects nodes and relationships by graph-native predicates", async () => {
+    const store = new InMemoryGraphStore();
+    const fixture = createHydraDbSmokeFixture();
+    await store.write(fixture.records);
+    const target = fixture.records.nodes.at(-1)!;
+    if (target.label !== "Resolution") throw new Error("invalid fixture target");
+
+    const nodes = await store.matchNodes({
+      label: "Resolution",
+      equals: { packageName: target.properties.packageName, version: target.properties.version },
+      limit: 10,
+    });
+    const relationships = await store.matchRelationships({
+      type: "DEPENDS_ON_INSTANCE",
+      to: { id: target.id, label: "Resolution" },
+      limit: 10,
+    });
+
+    expect(nodes.map(({ id }) => id)).toEqual([target.id]);
+    expect(relationships).toHaveLength(1);
+    expect(relationships[0]?.to.id).toBe(target.id);
+  });
+
   it("reuses canonical facts observed by a later import run", async () => {
     const store = new InMemoryGraphStore();
     const fixture = createHydraDbSmokeFixture();

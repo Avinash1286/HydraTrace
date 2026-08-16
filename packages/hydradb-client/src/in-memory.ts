@@ -9,10 +9,13 @@ import {
   GraphConflictError,
   graphRecordsSemanticallyEqual,
   type GraphPathQuery,
+  type GraphNodeQuery,
+  type GraphRelationshipQuery,
   type GraphStore,
   type GraphWriteSummary,
   MissingGraphEndpointError,
   validatePathQuery,
+  validateGraphQueryLimit,
   writeCounts,
 } from "./graph-store.js";
 
@@ -86,6 +89,39 @@ export class InMemoryGraphStore implements GraphStore {
       const relationship = this.#relationships.get(id);
       return relationship === undefined ? [] : [cloneRecord(relationship)];
     });
+  }
+
+  async matchNodes(query: GraphNodeQuery): Promise<readonly GraphNodeRecord[]> {
+    const limit = validateGraphQueryLimit(query.limit);
+    const equals = (query.equals ?? {}) as Record<string, unknown>;
+    return [...this.#nodes.values()]
+      .filter((node) => node.label === query.label)
+      .filter((node) => Object.entries(equals).every(
+        ([key, value]) => graphRecordsEqualValue((node.properties as Record<string, unknown>)[key], value),
+      ))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .slice(0, limit)
+      .map(cloneRecord);
+  }
+
+  async matchRelationships(
+    query: GraphRelationshipQuery,
+  ): Promise<readonly GraphRelationshipRecord[]> {
+    const limit = validateGraphQueryLimit(query.limit);
+    return [...this.#relationships.values()]
+      .filter((relationship) => relationship.type === query.type)
+      .filter((relationship) => Object.entries(query.equals ?? {}).every(
+        ([key, value]) => graphRecordsEqualValue((relationship.properties as Record<string, unknown>)[key], value),
+      ))
+      .filter((relationship) => query.from === undefined || (
+        relationship.from.id === query.from.id && relationship.from.label === query.from.label
+      ))
+      .filter((relationship) => query.to === undefined || (
+        relationship.to.id === query.to.id && relationship.to.label === query.to.label
+      ))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .slice(0, limit)
+      .map(cloneRecord);
   }
 
   async findPaths(query: GraphPathQuery): Promise<readonly GraphPath[]> {
@@ -179,6 +215,10 @@ function uniqueRecords<T extends { id: StableId }>(
 
 function cloneRecord<T>(record: T): T {
   return structuredClone(record);
+}
+
+function graphRecordsEqualValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function assertEndpoint(

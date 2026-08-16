@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-08-16T00:00:00.000Z",
+  "dataset": {
+    "seed": 42,
+    "profile": "custom",
+    "nodes": 301,
+    "edges": 399,
+    "resolutionInstances": 100
+  },
+  "environment": {
+    "platform": "Windows 11 / Docker Desktop",
+    "implementation": "HydraDB v0.1.1 strong local MinIO",
+    "nodeVersion": "v24.15.0"
+  },
+  "import": {
+    "milliseconds": 58013.31,
+    "nodesCreated": 301,
+    "relationshipsCreated": 399
+  },
+  "boundedPathQuery": {
+    "depth": 16,
+    "runs": 1,
+    "coldMilliseconds": 1191.39,
+    "paths": 1
+  },
+  "memory": {
+    "engineRssBytes": 81317888
+  },
+  "limitations": [
+    "A 1000-resolution write exceeded HydraDB v0.1.1's fixed 29999 ms query-runtime limit.",
+    "No ecosystem-scale HydraDB claim is made from this local control measurement."
+  ]
+}

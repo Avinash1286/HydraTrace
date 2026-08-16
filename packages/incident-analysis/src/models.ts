@@ -11,6 +11,9 @@ export interface IncidentInput {
   packageName: string;
   affectedVersions: readonly string[];
   advisoryId?: string;
+  advisoryPublishedAt?: number;
+  advisoryWithdrawnAt?: number;
+  packagePublishedAt?: number;
   startsAt?: number;
   endsAt?: number;
   environments?: readonly string[];
@@ -28,6 +31,9 @@ export interface IncidentRecord {
   normalizedPackageName: string;
   affectedVersions: readonly string[];
   advisoryId?: string;
+  advisoryPublishedAt?: number;
+  advisoryWithdrawnAt?: number;
+  packagePublishedAt?: number;
   startsAt?: number;
   endsAt?: number;
   environments: readonly string[];
@@ -141,12 +147,20 @@ export interface BlastRadiusResult {
 }
 
 export type TimelineEventType =
+  | "PACKAGE_VERSION_PUBLISHED"
+  | "ADVISORY_PUBLISHED"
+  | "ADVISORY_WITHDRAWN"
   | "INCIDENT_STARTED"
   | "SNAPSHOT_CREATED"
   | "DEPLOYMENT_STARTED"
   | "EXPOSURE_STARTED"
   | "DEPLOYMENT_ENDED"
   | "EXPOSURE_ENDED"
+  | "STATIC_REACHABILITY_DETECTED"
+  | "RUNTIME_OBSERVATION_RECORDED"
+  | "FIXED_SNAPSHOT_CREATED"
+  | "FIXED_SNAPSHOT_DEPLOYED"
+  | "FINAL_EXPOSURE_PATH_REMOVED"
   | "INCIDENT_ENDED";
 
 export interface TimelineEvent {

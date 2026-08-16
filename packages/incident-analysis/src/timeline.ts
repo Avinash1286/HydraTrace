@@ -24,10 +24,35 @@ export function buildExposureTimeline(
   const incident = catalog.getIncident(incidentId);
   if (incident === undefined) throw new Error(`Incident ${incidentId} was not found`);
   const full = analyzeBlastRadius(catalog, incidentId, {
-    includeDevelopment: true,
+    // Timeline defaults to the same production truth as blast radius. A
+    // development-only path must not keep the production exposure counter open.
+    includeDevelopment: false,
     limit: 100,
   });
   const pending: PendingEvent[] = [];
+
+  if (incident.packagePublishedAt !== undefined) {
+    pending.push({
+      type: "PACKAGE_VERSION_PUBLISHED",
+      at: incident.packagePublishedAt,
+      affectedVersion: incident.affectedVersions[0]!,
+      evidenceRefs: [`E-PACKAGE-PUBLISHED-${incident.normalizedPackageName}`],
+    });
+  }
+  if (incident.advisoryPublishedAt !== undefined) {
+    pending.push({
+      type: "ADVISORY_PUBLISHED",
+      at: incident.advisoryPublishedAt,
+      evidenceRefs: [`E-ADVISORY-${incident.advisoryId ?? incident.id}`],
+    });
+  }
+  if (incident.advisoryWithdrawnAt !== undefined) {
+    pending.push({
+      type: "ADVISORY_WITHDRAWN",
+      at: incident.advisoryWithdrawnAt,
+      evidenceRefs: [`E-ADVISORY-${incident.advisoryId ?? incident.id}`],
+    });
+  }
 
   if (incident.startsAt !== undefined) {
     pending.push({
@@ -102,6 +127,62 @@ export function buildExposureTimeline(
         evidenceRefs: finding.evidenceRefs,
       });
     }
+    for (const evidence of finding.reachabilityEvidence) {
+      pending.push({
+        type: evidence.source === "static"
+          ? "STATIC_REACHABILITY_DETECTED"
+          : "RUNTIME_OBSERVATION_RECORDED",
+        at: evidence.observedAt,
+        serviceId: finding.serviceId,
+        deploymentId: finding.deploymentId,
+        snapshotId: finding.snapshotId,
+        affectedVersion: finding.affectedVersion,
+        evidenceRefs: evidence.evidenceRefs,
+      });
+    }
+
+    if (finding.lastExposedAt !== null) {
+      const fixed = catalog.entries()
+        .flatMap((candidate) => candidate.deployments.map((candidateDeployment) => ({ candidate, candidateDeployment })))
+        .filter(({ candidate, candidateDeployment }) =>
+          candidate.normalized.snapshot.repositoryId === finding.repositoryId &&
+          candidateDeployment.serviceId === finding.serviceId &&
+          candidateDeployment.startedAt >= finding.lastExposedAt! &&
+          !candidate.normalized.resolutions.some(({ packageName, version }) =>
+            packageName.toLowerCase() === incident.normalizedPackageName &&
+            incident.affectedVersions.includes(version)))
+        .sort((left, right) => left.candidateDeployment.startedAt - right.candidateDeployment.startedAt)[0];
+      if (fixed !== undefined) {
+        pending.push(
+          {
+            type: "FIXED_SNAPSHOT_CREATED",
+            at: fixed.candidate.normalized.snapshot.createdAt,
+            serviceId: finding.serviceId,
+            snapshotId: fixed.candidate.normalized.snapshot.id,
+            evidenceRefs: [`E-SNAPSHOT-${fixed.candidate.normalized.snapshot.id}`],
+          },
+          {
+            type: "FIXED_SNAPSHOT_DEPLOYED",
+            at: fixed.candidateDeployment.startedAt,
+            serviceId: finding.serviceId,
+            deploymentId: fixed.candidateDeployment.deploymentId,
+            snapshotId: fixed.candidate.normalized.snapshot.id,
+            evidenceRefs: [`E-DEPLOYMENT-${fixed.candidateDeployment.deploymentId}`],
+          },
+        );
+      }
+    }
+  }
+
+  const finalRemovalAt = full.findings.length > 0 && full.findings.every(({ lastExposedAt }) => lastExposedAt !== null)
+    ? Math.max(...full.findings.map(({ lastExposedAt }) => lastExposedAt!))
+    : undefined;
+  if (finalRemovalAt !== undefined) {
+    pending.push({
+      type: "FINAL_EXPOSURE_PATH_REMOVED",
+      at: finalRemovalAt,
+      evidenceRefs: [...new Set(full.findings.flatMap(({ evidenceRefs }) => evidenceRefs))],
+    });
   }
 
   const unique = new Map<string, PendingEvent>();
@@ -128,7 +209,7 @@ export function buildExposureTimeline(
     );
     const exposureCountAfter = analyzeBlastRadius(catalog, incidentId, {
       at: event.at,
-      includeDevelopment: true,
+      includeDevelopment: false,
       limit: 100,
     }).totalFindings;
     return {

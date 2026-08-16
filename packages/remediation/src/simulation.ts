@@ -54,4 +54,18 @@ function countAffectedPaths(content: string, input: LockfileSimulationInput): nu
 }
 
 function lockfileChurn(before: string, after: string): number { const left = before.split(/\r?\n/u); const right = after.split(/\r?\n/u); const length = Math.max(left.length, right.length); let changed = 0; for (let index = 0; index < length; index += 1) if (left[index] !== right[index]) changed += 1; return changed; }
-function run(command: string, args: readonly string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr: string }> { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); let stdout = ""; let stderr = ""; const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs); child.stdout.on("data", (chunk) => { if (stdout.length < 100_000) stdout += String(chunk); }); child.stderr.on("data", (chunk) => { if (stderr.length < 100_000) stderr += String(chunk); }); child.once("error", reject); child.once("close", (code) => { clearTimeout(timer); resolve({ exitCode: code ?? -1, stdout, stderr }); }); }); }
+function run(command: string, args: readonly string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr: string }> { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: safeChildEnvironment(cwd) }); let stdout = ""; let stderr = ""; const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs); child.stdout.on("data", (chunk) => { if (stdout.length < 100_000) stdout += String(chunk); }); child.stderr.on("data", (chunk) => { if (stderr.length < 100_000) stderr += String(chunk); }); child.once("error", reject); child.once("close", (code) => { clearTimeout(timer); resolve({ exitCode: code ?? -1, stdout, stderr }); }); }); }
+
+function safeChildEnvironment(cwd: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    npm_config_cache: join(cwd, ".npm-cache"),
+    npm_config_ignore_scripts: "true",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    NODE_OPTIONS: "--max-old-space-size=256",
+  };
+  for (const key of ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "ComSpec", "COMSPEC", "TEMP", "TMP", "TMPDIR"]) {
+    if (process.env[key] !== undefined) environment[key] = process.env[key];
+  }
+  return environment;
+}

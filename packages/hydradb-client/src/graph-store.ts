@@ -5,6 +5,8 @@ import type {
   GraphPath,
   GraphRecords,
   GraphRelationshipRecord,
+  NodeLabel,
+  NodePropertiesByLabel,
   RelationshipType,
 } from "@hydratrace/graph-schema";
 
@@ -31,14 +33,41 @@ export interface GraphPathQuery {
   limit?: number;
 }
 
+export type GraphNodeQuery<L extends NodeLabel = NodeLabel> = {
+  [K in L]: {
+    label: K;
+    equals?: Partial<NodePropertiesByLabel[K]>;
+    limit?: number;
+  };
+}[L];
+
+export interface GraphRelationshipQuery<T extends RelationshipType = RelationshipType> {
+  type: T;
+  from?: GraphNodeRef;
+  to?: GraphNodeRef;
+  equals?: Readonly<Record<string, string | number | boolean>>;
+  limit?: number;
+}
+
 export interface GraphStore {
   write(records: GraphRecords): Promise<GraphWriteSummary>;
   getNodes(ids: readonly StableId[]): Promise<readonly GraphNodeRecord[]>;
   getRelationships(
     ids: readonly StableId[],
   ): Promise<readonly GraphRelationshipRecord[]>;
+  matchNodes(query: GraphNodeQuery): Promise<readonly GraphNodeRecord[]>;
+  matchRelationships(
+    query: GraphRelationshipQuery,
+  ): Promise<readonly GraphRelationshipRecord[]>;
   findPaths(query: GraphPathQuery): Promise<readonly GraphPath[]>;
   close(): Promise<void>;
+}
+
+export function validateGraphQueryLimit(limit = 1_000): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+    throw new RangeError("Graph query limit must be an integer between 1 and 10000");
+  }
+  return limit;
 }
 
 export class GraphConflictError extends Error {

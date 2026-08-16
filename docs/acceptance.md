@@ -7,11 +7,11 @@
 | Safe/dev-only negative controls | Known-answer fixture assertions | Passed |
 | Idempotent durable graph | Live write twice, restart, read again | Passed |
 | Separate healthy indexer | Admin readiness and zero failed cycles | Passed |
-| Convex retries/progress | Lease/reclaim code and 7 production scan events | Passed |
+| Convex retries/progress | Storage upload, HMAC dispatch/callback, reclaim code, and 9 production events | Passed |
 | Reachability/neighborhood reasons | Static/runtime and neighborhood tests | Passed |
 | Remediation coverage/verification | Exact/greedy tests and strong zero-path guard | Passed |
 | Grounded AI/fallback | Schema/citation/circuit/fallback tests | Passed |
-| Public application | Vercel web/engine HTTP 200 and production scan | Passed |
+| Public application | Vercel web/engine/system HTTP 200 and production scan | Passed |
 | Graph/timeline/evidence/report UI | Production browser DOM and interaction checks | Passed |
 | CI gate | Vercel build runs verify + fixture gate; no GitHub Action by request | Passed |
 | Private production HydraDB | Zerops code/config ready; account activation required | Blocked on owner |

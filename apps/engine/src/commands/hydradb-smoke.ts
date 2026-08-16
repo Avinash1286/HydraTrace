@@ -20,6 +20,8 @@ try {
         secondWrite: second.write,
         readNodeCount: second.readNodeCount,
         readRelationshipCount: second.readRelationshipCount,
+        matchedNodeCount: second.matchedNodeCount,
+        matchedRelationshipCount: second.matchedRelationshipCount,
         pathCount: second.pathCount,
         orderedPath: second.orderedPath,
       },

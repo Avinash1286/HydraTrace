@@ -18,6 +18,10 @@ Production environment variables:
 web:    NEXT_PUBLIC_HYDRATRACE_API_URL=https://hydratrace-engine.vercel.app
 engine: WEB_ORIGIN=https://hydratrace.vercel.app
 engine: CONVEX_URL=https://accomplished-skunk-643.convex.cloud
+engine: HYDRATRACE_JOB_SHARED_SECRET=<same 32+ character secret as Convex>
+engine: HYDRATRACE_AUTO_SEED_DEMO=true
+Convex: HYDRATRACE_ENGINE_DISPATCH_URL=https://hydratrace-engine.vercel.app
+Convex: HYDRATRACE_JOB_SHARED_SECRET=<same secret as engine>
 ```
 
 Deploy from each app directory:

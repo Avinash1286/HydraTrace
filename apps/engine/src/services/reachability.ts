@@ -1,8 +1,10 @@
 import type { StableId } from "@hydratrace/domain";
+import type { GraphStore } from "@hydratrace/hydradb-client";
 import type { IncidentCatalog } from "@hydratrace/incident-analysis";
 import { analyzeStaticImports, type RuntimeTrace } from "@hydratrace/reachability";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { persistRuntimeReachability, persistStaticReachability } from "./reachability-graph.js";
 
 const stableIdSchema = z.string().regex(/^\d+$/);
 const staticBodySchema = z.object({
@@ -41,6 +43,7 @@ const evidenceParametersSchema = z.object({
 export function registerReachabilityRoutes(
   application: FastifyInstance,
   catalog: IncidentCatalog,
+  graphStore: GraphStore,
 ): void {
   application.post("/v1/reachability/static", async (request, reply) => {
     const parsed = staticBodySchema.safeParse(request.body);
@@ -52,6 +55,9 @@ export function registerReachabilityRoutes(
         analysis,
         parsed.data.observedAt ?? Date.now(),
       );
+      const entry = catalog.entry(parsed.data.snapshotId as StableId);
+      if (entry === undefined) throw new Error("Static analysis snapshot disappeared");
+      await persistStaticReachability(graphStore, entry, parsed.data, analysis, evidence);
       return reply.code(201).send({ analysis, evidence });
     } catch (error) {
       return reply.code(400).send({
@@ -77,6 +83,9 @@ export function registerReachabilityRoutes(
           : { deploymentId: parsed.data.deploymentId as StableId }),
       };
       const evidence = catalog.registerRuntimeTrace(trace);
+      const entry = catalog.entry(trace.snapshotId);
+      if (entry === undefined) throw new Error("Runtime trace snapshot disappeared");
+      await persistRuntimeReachability(graphStore, entry, trace, evidence);
       return reply.code(201).send({ accepted: evidence.length, evidence });
     } catch (error) {
       return reply.code(400).send({

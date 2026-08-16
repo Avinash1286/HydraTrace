@@ -77,6 +77,14 @@ export class PackageIntelligenceCatalog {
 
   get size(): number { return this.#packages.size; }
 
+  clear(): void { this.#packages.clear(); }
+
+  all(): readonly PackageMetadata[] {
+    return [...this.#packages.values()]
+      .sort((left, right) => left.normalizedName.localeCompare(right.normalizedName) || left.version.localeCompare(right.version))
+      .map((record) => structuredClone(record));
+  }
+
   get(name: string, version: string): PackageMetadata | undefined {
     const id = stableIdFromCanonicalKey(`package-metadata:npm:${normalizeNpmPackageName(name)}:${version}`);
     const record = this.#packages.get(id);

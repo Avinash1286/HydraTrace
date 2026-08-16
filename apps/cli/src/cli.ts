@@ -8,7 +8,8 @@ const options = parseOptions(tokens);
 const api = String(options.api ?? process.env.HYDRATRACE_API_URL ?? "http://127.0.0.1:4100").replace(/\/$/u, "");
 
 try {
-  if (command === "scan") await scan();
+  if (command === "--help" || command === "help") usage();
+  else if (command === "scan") await scan();
   else if (command === "incident") await incident(false);
   else if (command === "gate") await incident(true);
   else throw configurationError("Usage: hydratrace <scan|incident|gate> [options]");
@@ -16,6 +17,18 @@ try {
   const value = error as Error & { exitCode?: number };
   process.stderr.write(`${value.message}\n`);
   process.exitCode = value.exitCode ?? 2;
+}
+
+function usage(): void {
+  process.stdout.write([
+    "Usage: hydratrace <scan|incident|gate> [options]",
+    "",
+    "scan     --lockfile <path> [--repository <id>] [--commit <sha>] [--environment production]",
+    "incident --package <name> --version <exact> [--from <ISO>] [--to <ISO>] [--format json|table|sarif]",
+    "gate     Same options as incident; exits 1 for reachable High/Critical exposure",
+    "global   [--api <engine-url>] (or HYDRATRACE_API_URL)",
+    "",
+  ].join("\n"));
 }
 
 async function scan(): Promise<void> {

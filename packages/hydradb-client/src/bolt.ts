@@ -28,10 +28,13 @@ import {
   GraphConflictError,
   graphRecordsSemanticallyEqual,
   type GraphPathQuery,
+  type GraphNodeQuery,
+  type GraphRelationshipQuery,
   type GraphStore,
   type GraphWriteSummary,
   MissingGraphEndpointError,
   validatePathQuery,
+  validateGraphQueryLimit,
   writeCounts,
 } from "./graph-store.js";
 
@@ -338,6 +341,85 @@ export class HydraDbGraphStore implements GraphStore {
       }
     }
     return orderByRequestedIds(relationships, ids);
+  }
+
+  async matchNodes(query: GraphNodeQuery): Promise<readonly GraphNodeRecord[]> {
+    const limit = validateGraphQueryLimit(query.limit);
+    const keys = NODE_PROPERTY_KEYS[query.label];
+    const equals = Object.entries(query.equals ?? {});
+    const allowed = new Set<string>(keys);
+    for (const [key, value] of equals) {
+      if (!allowed.has(key)) throw new Error(`Unsupported ${query.label} query property ${key}`);
+      assertHydraDbPropertyValue(value, key);
+    }
+    const parameters = Object.fromEntries(equals.map(([key, value], index) => [
+      `q${index}`,
+      databasePropertyValue(value),
+    ]));
+    const where = equals.length === 0
+      ? []
+      : [`WHERE ${equals.map(([key], index) => `n.${key} = $q${index}`).join(" AND ")}`];
+    const result = await this.#run([
+      `MATCH (n:${query.label})`,
+      ...where,
+      `RETURN n.id AS id${propertyProjection("n", keys)}`,
+      `LIMIT ${limit}`,
+    ].join("\n"), parameters, "read");
+    return result.records.map((record) => ({
+      id: stableIdValue(record.get("id"), "node id"),
+      label: query.label,
+      properties: projectedProperties(record, keys),
+    }) as unknown as GraphNodeRecord);
+  }
+
+  async matchRelationships(
+    query: GraphRelationshipQuery,
+  ): Promise<readonly GraphRelationshipRecord[]> {
+    const limit = validateGraphQueryLimit(query.limit);
+    const endpoints = RELATIONSHIP_ENDPOINT_LABELS[query.type];
+    const fromLabels = query.from === undefined ? endpoints.from : [query.from.label];
+    const toLabels = query.to === undefined ? endpoints.to : [query.to.label];
+    if (query.from !== undefined && !endpoints.from.includes(query.from.label as never)) return [];
+    if (query.to !== undefined && !endpoints.to.includes(query.to.label as never)) return [];
+    const records: GraphRelationshipRecord[] = [];
+    for (const fromLabel of fromLabels) {
+      for (const toLabel of toLabels) {
+        const keys = RELATIONSHIP_PROPERTY_KEYS[query.type];
+        const predicates: string[] = [];
+        const parameters: Record<string, unknown> = {};
+        const allowed = new Set<string>(keys);
+        for (const [key, value] of Object.entries(query.equals ?? {})) {
+          if (!allowed.has(key)) throw new Error(`Unsupported ${query.type} query property ${key}`);
+          assertHydraDbPropertyValue(value, key);
+          const parameter = `q${Object.keys(parameters).length}`;
+          predicates.push(`r.${key} = $${parameter}`);
+          parameters[parameter] = databasePropertyValue(value);
+        }
+        if (query.from !== undefined) {
+          predicates.push("from.id = $fromId");
+          parameters.fromId = databaseId(query.from.id);
+        }
+        if (query.to !== undefined) {
+          predicates.push("to.id = $toId");
+          parameters.toId = databaseId(query.to.id);
+        }
+        const result = await this.#run([
+          `MATCH (from:${fromLabel})-[r:${query.type}]->(to:${toLabel})`,
+          ...(predicates.length === 0 ? [] : [`WHERE ${predicates.join(" AND ")}`]),
+          `RETURN r.${RELATIONSHIP_STABLE_ID_PROPERTY} AS id, from.id AS fromId, to.id AS toId${propertyProjection("r", keys)}`,
+          `LIMIT ${Math.max(1, limit - records.length)}`,
+        ].join("\n"), parameters, "read");
+        records.push(...result.records.map((record) => ({
+          id: stableIdValue(record.get("id"), "relationship id"),
+          type: query.type,
+          from: { id: stableIdValue(record.get("fromId"), "from node id"), label: fromLabel },
+          to: { id: stableIdValue(record.get("toId"), "to node id"), label: toLabel },
+          properties: projectedProperties(record, keys),
+        }) as unknown as GraphRelationshipRecord));
+        if (records.length >= limit) return records.slice(0, limit);
+      }
+    }
+    return records;
   }
 
   async findPaths(query: GraphPathQuery): Promise<readonly GraphPath[]> {
@@ -711,14 +793,43 @@ const NODE_PROPERTY_KEYS = {
     "publishedAt",
   ],
   Advisory: ["summary", "severity", "publishedAt", "modifiedAt"],
-  IncidentWindow: ["startsAt", "endsAt", "source", "confidence"],
+  IncidentWindow: [
+    "startsAt",
+    "endsAt",
+    "source",
+    "confidence",
+    "ecosystem",
+    "packageName",
+    "normalizedPackageName",
+    "affectedVersionsJson",
+    "environmentsJson",
+    "advisoryId",
+    "advisoryPublishedAt",
+    "advisoryWithdrawnAt",
+    "packagePublishedAt",
+    "windowSource",
+    "severityScore",
+    "trustContextScore",
+    "createdAt",
+  ],
   Maintainer: ["username", "emailHash", "emailDomain"],
   Infrastructure: ["type", "value"],
   SourceModule: ["filePath", "language", "contentHash"],
   EntryPoint: ["type", "command"],
-  RuntimeObservation: ["runId", "observedAt", "source"],
-  Evidence: ["type", "sourceRef", "sha256", "parserVersion"],
+  RuntimeObservation: [
+    "runId", "observedAt", "source", "snapshotId", "deploymentId",
+    "packageName", "version", "command", "loadCount",
+  ],
+  Evidence: [
+    "type", "sourceRef", "sha256", "parserVersion", "snapshotId",
+    "packageName", "version", "level", "observedAt", "evidenceRefsJson", "detailsJson",
+  ],
   RemediationCandidate: ["fromVersion", "toVersion", "cost"],
+  RemediationRun: ["incidentId", "createdAt", "beforePathIdsJson", "solutionJson", "status"],
+  RemediationVerification: [
+    "runId", "createdAt", "level", "snapshotIdsJson", "remainingPathCount",
+    "passed", "message", "status",
+  ],
 } as const satisfies {
   [L in NodeLabel]: readonly (keyof NodePropertiesByLabel[L] & string)[];
 };

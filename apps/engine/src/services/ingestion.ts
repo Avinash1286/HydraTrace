@@ -2,11 +2,13 @@ import type {
   DeploymentManifest,
   LockfileParserOptions,
   NormalizedSnapshot,
+  StableId,
 } from "@hydratrace/domain";
-import { parseDeploymentManifest } from "@hydratrace/domain";
+import { parseDeploymentManifest, stableIdFromCanonicalKey } from "@hydratrace/domain";
 import {
   deploymentManifestToGraphRecords,
   normalizedSnapshotToGraphRecords,
+  type GraphRelationshipRecord,
 } from "@hydratrace/graph-schema";
 import type { GraphStore, GraphWriteSummary } from "@hydratrace/hydradb-client";
 import { parseLockfile } from "@hydratrace/lockfile-parsers";
@@ -40,11 +42,13 @@ export async function ingestLockfile(
     deployment === undefined
       ? { nodes: [], relationships: [] }
       : deploymentManifestToGraphRecords(deployment, normalized.snapshot);
+  const supersedes = await supersedesRelationship(store, normalized);
   const records = {
     nodes: [...normalizedRecords.nodes, ...deploymentRecords.nodes],
     relationships: [
       ...normalizedRecords.relationships,
       ...deploymentRecords.relationships,
+      ...(supersedes === undefined ? [] : [supersedes]),
     ],
   };
   const graphWrite = await store.write(records);
@@ -52,6 +56,37 @@ export async function ingestLockfile(
     normalized,
     ...(deployment === undefined ? {} : { deployment }),
     graphWrite,
+  };
+}
+
+async function supersedesRelationship(
+  store: GraphStore,
+  normalized: NormalizedSnapshot,
+): Promise<GraphRelationshipRecord<"SUPERSEDES"> | undefined> {
+  const existing = await store.matchNodes({
+    label: "LockfileSnapshot",
+    equals: { repositoryId: normalized.snapshot.repositoryId },
+    limit: 10_000,
+  });
+  const previous = existing
+    .filter((node) =>
+      node.label === "LockfileSnapshot" &&
+      node.id !== normalized.snapshot.id &&
+      node.properties.createdAt <= normalized.snapshot.createdAt)
+    .sort((left, right) =>
+      (right.properties as { createdAt: number }).createdAt -
+        (left.properties as { createdAt: number }).createdAt ||
+      right.id.localeCompare(left.id))[0];
+  if (previous === undefined) return undefined;
+  const id = stableIdFromCanonicalKey(
+    `supersedes:${normalized.snapshot.id}:${previous.id}`,
+  ) as StableId;
+  return {
+    id,
+    type: "SUPERSEDES",
+    from: { id: normalized.snapshot.id, label: "LockfileSnapshot" },
+    to: { id: previous.id, label: "LockfileSnapshot" },
+    properties: {},
   };
 }
 

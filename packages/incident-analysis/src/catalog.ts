@@ -78,6 +78,9 @@ export class IncidentCatalog {
     if (input.endsAt !== undefined && !isTimestamp(input.endsAt)) {
       throw new Error("Incident endsAt must be a nonnegative integer timestamp");
     }
+    if (input.advisoryWithdrawnAt !== undefined && !isTimestamp(input.advisoryWithdrawnAt)) {
+      throw new Error("Incident advisoryWithdrawnAt must be a nonnegative integer timestamp");
+    }
     if (
       input.startsAt !== undefined &&
       input.endsAt !== undefined &&
@@ -107,6 +110,7 @@ export class IncidentCatalog {
       input.advisoryId ?? "",
       input.startsAt ?? "",
       input.endsAt ?? "",
+      input.advisoryWithdrawnAt ?? "",
       environments.join(","),
     ].join(":");
     const id = stableIdFromCanonicalKey(identity);
@@ -124,6 +128,9 @@ export class IncidentCatalog {
       trustContextScore: input.trustContextScore ?? 0.5,
       createdAt: now,
       ...(input.advisoryId === undefined ? {} : { advisoryId: input.advisoryId }),
+      ...(input.advisoryPublishedAt === undefined ? {} : { advisoryPublishedAt: input.advisoryPublishedAt }),
+      ...(input.advisoryWithdrawnAt === undefined ? {} : { advisoryWithdrawnAt: input.advisoryWithdrawnAt }),
+      ...(input.packagePublishedAt === undefined ? {} : { packagePublishedAt: input.packagePublishedAt }),
       ...(input.startsAt === undefined ? {} : { startsAt: input.startsAt }),
       ...(input.endsAt === undefined ? {} : { endsAt: input.endsAt }),
     };
@@ -307,6 +314,25 @@ export class IncidentCatalog {
       )
       .sort(compareReachabilityEvidence)
       .map((evidence) => structuredClone(evidence));
+  }
+
+  registerReachabilityEvidence(input: ReachabilityEvidence): ReachabilityEvidence {
+    const entry = this.#entries.get(input.snapshotId);
+    if (entry === undefined) throw new Error(`Snapshot ${input.snapshotId} was not found`);
+    const installed = entry.normalized.packages.some(
+      ({ normalizedName, version }) =>
+        normalizedName === normalizeNpmPackageName(input.packageName) &&
+        (input.version === undefined || version === input.version),
+    );
+    if (!installed) throw new Error("Reachability evidence does not match an installed package version");
+    const expectedId = stableIdFromCanonicalKey(
+      `reachability:${input.snapshotId}:${normalizeNpmPackageName(input.packageName)}:${input.version ?? "*"}:${input.source}:${input.evidenceRefs.join(",")}`,
+    );
+    if (input.id !== expectedId) throw new Error("Reachability evidence ID is not canonical");
+    const existing = this.#reachability.get(input.id);
+    if (existing !== undefined) return structuredClone(existing);
+    this.#reachability.set(input.id, structuredClone(input));
+    return structuredClone(input);
   }
 
   clear(): void {

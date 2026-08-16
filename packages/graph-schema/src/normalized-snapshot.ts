@@ -88,6 +88,7 @@ export function normalizedSnapshotToGraphRecords(
         sourceRef: normalized.snapshot.sourceRef,
         parserVersion: normalized.snapshot.parserVersion,
         createdAt: normalized.snapshot.createdAt,
+        ...(normalized.snapshot.validUntil === undefined ? {} : { validUntil: normalized.snapshot.validUntil }),
       },
     },
   ];
@@ -180,9 +181,8 @@ export function normalizedSnapshotToGraphRecords(
     );
   }
 
-  relationships.push(
-    ...normalized.edges.map(
-      (edge): GraphRelationshipRecord<"DEPENDS_ON_INSTANCE"> => ({
+  for (const edge of normalized.edges) {
+    relationships.push({
         id: edge.id,
         type: "DEPENDS_ON_INSTANCE",
         from: { id: edge.fromResolutionId, label: "Resolution" },
@@ -193,9 +193,8 @@ export function normalizedSnapshotToGraphRecords(
           ...provenanceProperties(edge.provenance),
           ...(edge.specifier === undefined ? {} : { specifier: edge.specifier }),
         },
-      }),
-    ),
-  );
+      } satisfies GraphRelationshipRecord<"DEPENDS_ON_INSTANCE">);
+  }
 
   return { nodes, relationships };
 }

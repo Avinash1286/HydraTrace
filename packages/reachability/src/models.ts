@@ -23,6 +23,8 @@ export interface StaticAnalysisResult {
   repositoryId: string;
   commitSha: string;
   analyzedFiles: readonly string[];
+  entrypoints: readonly string[];
+  moduleEdges: readonly { from: string; to: string }[];
   unreachableFiles: readonly string[];
   packages: readonly StaticPackageObservation[];
   unknownDynamicBehavior: boolean;

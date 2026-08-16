@@ -178,10 +178,12 @@ function deploymentMatches(
   }
   if (query.at !== undefined) {
     if (query.at < normalized.snapshot.createdAt) return false;
+    if (normalized.snapshot.validUntil !== undefined && query.at >= normalized.snapshot.validUntil) return false;
     if (query.at < deployment.startedAt) return false;
     if (deployment.endedAt !== null && query.at >= deployment.endedAt) return false;
     if (incident.startsAt !== undefined && query.at < incident.startsAt) return false;
     if (incident.endsAt !== undefined && query.at > incident.endsAt) return false;
+    if (incident.advisoryWithdrawnAt !== undefined && query.at >= incident.advisoryWithdrawnAt) return false;
     return true;
   }
 
@@ -191,7 +193,9 @@ function deploymentMatches(
     incident.startsAt ?? Number.NEGATIVE_INFINITY,
   );
   const exposureEndExclusive = Math.min(
+    normalized.snapshot.validUntil ?? Number.POSITIVE_INFINITY,
     deployment.endedAt ?? Number.POSITIVE_INFINITY,
+    incident.advisoryWithdrawnAt ?? Number.POSITIVE_INFINITY,
     incident.endsAt === undefined
       ? Number.POSITIVE_INFINITY
       : incident.endsAt === Number.MAX_SAFE_INTEGER

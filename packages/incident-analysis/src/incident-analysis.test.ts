@@ -1,5 +1,6 @@
 import {
   parseDeploymentManifest,
+  stableIdFromCanonicalKey,
   type DeploymentManifest,
   type NormalizedSnapshot,
 } from "@hydratrace/domain";
@@ -137,6 +138,75 @@ describe("exact temporal blast radius", () => {
     );
   });
 
+  it("covers every temporal boundary in the project contract", () => {
+    const fixture = loadFixtureCatalog();
+    const payment = fixture.imports.find(({ deployment }) => deployment.serviceId === "payment-worker");
+    if (payment === undefined) throw new Error("payment fixture missing");
+    const start = payment.deployment.startedAt;
+    const normalized = structuredClone(payment.normalized);
+    normalized.snapshot.createdAt = start - 1_000;
+
+    const analyze = (
+      deployments: DeploymentManifest[],
+      incidentOverrides: Parameters<IncidentCatalog["createIncident"]>[0] = {
+        ecosystem: "npm",
+        packageName: "compromised-helper",
+        affectedVersions: ["1.4.2"],
+      },
+      at?: number,
+    ) => {
+      const catalog = new IncidentCatalog();
+      for (const deployment of deployments) catalog.registerSnapshot(normalized, deployment);
+      const incident = catalog.createIncident(incidentOverrides, 0);
+      return analyzeBlastRadius(catalog, incident.id, at === undefined ? {} : { at });
+    };
+
+    const atBoundary = analyze(
+      [{ ...payment.deployment, startedAt: start }],
+      { ecosystem: "npm", packageName: "compromised-helper", affectedVersions: ["1.4.2"], startsAt: start },
+      start,
+    );
+    expect(atBoundary.totalFindings).toBe(1);
+
+    const endedAtBoundary = analyze(
+      [{ ...payment.deployment, startedAt: start - 1_000, endedAt: start }],
+      { ecosystem: "npm", packageName: "compromised-helper", affectedVersions: ["1.4.2"], startsAt: start },
+      start,
+    );
+    expect(endedAtBoundary.totalFindings).toBe(0);
+
+    normalized.snapshot.validUntil = start + 2_000;
+    expect(analyze([payment.deployment], undefined, start + 1_999).totalFindings).toBe(1);
+    expect(analyze([payment.deployment], undefined, start + 2_000).totalFindings).toBe(0);
+    delete normalized.snapshot.validUntil;
+
+    expect(analyze(
+      [payment.deployment],
+      { ecosystem: "npm", packageName: "compromised-helper", affectedVersions: ["1.4.2"], advisoryWithdrawnAt: start + 500 },
+      start + 500,
+    ).totalFindings).toBe(0);
+
+    expect(analyze([payment.deployment], undefined, start + 86_400_000).totalFindings).toBe(1);
+
+    const secondDeployment = {
+      ...payment.deployment,
+      deploymentId: stableIdFromCanonicalKey("temporal:second-deployment"),
+      startedAt: start + 1_000,
+    };
+    expect(analyze([payment.deployment, secondDeployment], undefined, start + 1_500).totalFindings).toBe(2);
+
+    const originalEnded = { ...payment.deployment, endedAt: start + 1_000 };
+    const rollback = {
+      ...payment.deployment,
+      deploymentId: stableIdFromCanonicalKey("temporal:rollback"),
+      startedAt: start + 10_000,
+      endedAt: null,
+    };
+    const rollbackResult = analyze([originalEnded, rollback], undefined, start + 10_000);
+    expect(rollbackResult.totalFindings).toBe(1);
+    expect(rollbackResult.findings[0]?.deploymentId).toBe(rollback.deploymentId);
+  });
+
   it("counts all paths while limiting displayed evidence", () => {
     const fixture = loadFixtureCatalog();
     const result = analyzeBlastRadius(fixture.catalog, fixture.incidentId, {
@@ -158,12 +228,11 @@ describe("exact temporal blast radius", () => {
     );
 
     expect(exposureStarts.map(({ serviceId }) => serviceId)).toEqual([
-      "analytics-dashboard",
       "checkout-api",
       "payment-worker",
     ]);
     expect(exposureStarts.map(({ exposureCountAfter }) => exposureCountAfter)).toEqual([
-      1, 2, 3,
+      1, 2,
     ]);
   });
 });

@@ -9,7 +9,7 @@ import { z } from "zod";
 import { api } from "../../../../convex/_generated/api.js";
 import type { Id } from "../../../../convex/_generated/dataModel.js";
 
-const scanSchema = z
+const resolvedScanSchema = z
   .object({
     content: z.string().min(1).max(5_000_000),
     sourceRef: z.string().trim().min(1),
@@ -25,17 +25,68 @@ const scanSchema = z
     deploymentManifest: z.string().min(1).max(100_000).optional(),
   })
   .strict();
+
+const scanRequestSchema = z
+  .object({
+    mode: z.enum(["lockfile", "zip", "repository"]).default("lockfile"),
+    content: z.string().min(1).max(5_000_000).optional(),
+    archiveBase64: z.string().min(1).max(5_400_000).optional(),
+    repositoryUrl: z.string().url().max(2_048).optional(),
+    ref: z.string().trim().min(1).max(256).optional(),
+    lockfilePath: z.string().trim().min(1).max(1_024).optional(),
+    sourceRef: z.string().trim().min(1).max(1_024).optional(),
+    repositoryId: z.string().trim().min(1).max(512).optional(),
+    commitSha: z.string().trim().min(1).max(256).optional(),
+    observedAt: z.number().int().nonnegative().optional(),
+    rootPackage: z
+      .object({
+        name: z.string().trim().min(1),
+        version: z.string().trim().min(1),
+      })
+      .optional(),
+    deploymentManifest: z.string().min(1).max(100_000).optional(),
+    organizationId: z.string().trim().min(1).max(256).optional(),
+    serviceId: z.string().trim().min(1).max(256).optional(),
+    environment: z.string().trim().min(1).max(128).optional(),
+    deploymentStartedAt: z.number().int().nonnegative().optional(),
+    deploymentEndedAt: z.number().int().nonnegative().nullable().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.mode === "lockfile" && value.content === undefined) {
+      context.addIssue({ code: "custom", path: ["content"], message: "Lockfile content is required" });
+    }
+    if (value.mode === "zip" && value.archiveBase64 === undefined) {
+      context.addIssue({ code: "custom", path: ["archiveBase64"], message: "ZIP archive is required" });
+    }
+    if (value.mode === "repository" && value.repositoryUrl === undefined) {
+      context.addIssue({ code: "custom", path: ["repositoryUrl"], message: "Repository URL is required" });
+    }
+    if (
+      value.deploymentStartedAt !== undefined &&
+      value.deploymentEndedAt !== undefined &&
+      value.deploymentEndedAt !== null &&
+      value.deploymentEndedAt <= value.deploymentStartedAt
+    ) {
+      context.addIssue({ code: "custom", path: ["deploymentEndedAt"], message: "Deployment end must be later than start" });
+    }
+  });
 const scanParameters = z.object({ scanId: z.string().regex(/^\d+$/u) });
 
 export type ScanStage =
   | "QUEUED"
   | "ACQUIRING"
   | "PARSING"
+  | "ENRICHING"
   | "WRITING_GRAPH"
+  | "INDEXING"
   | "WAITING_FOR_INDEX"
   | "ANALYZING"
   | "COMPLETE"
   | "FAILED"
+  | "RETRY_WAIT"
+  | "CANCEL_REQUESTED"
+  | "CANCELLED"
   | "CANCELED";
 
 interface ScanEvent {
@@ -60,10 +111,12 @@ interface ScanRecord {
   convexId?: Id<"scans">;
 }
 
-export type ScanWorkflowInput = z.infer<typeof scanSchema>;
+export type ScanWorkflowInput = z.infer<typeof resolvedScanSchema>;
+export type ScanWorkflowRequest = z.infer<typeof scanRequestSchema>;
 
 export function registerScanWorkflowRoutes(
   application: FastifyInstance,
+  prepare: (request: ScanWorkflowRequest) => Promise<ScanWorkflowInput>,
   execute: (
     input: ScanWorkflowInput,
     progress: (stage: ScanStage, message: string) => void,
@@ -78,12 +131,24 @@ export function registerScanWorkflowRoutes(
     : undefined;
 
   application.post("/v1/scans", async (request, reply) => {
-    const parsed = scanSchema.safeParse(request.body);
+    const parsed = scanRequestSchema.safeParse(request.body);
     if (!parsed.success) {
-      return reply.code(400).send({ error: "INVALID_SCAN" });
+      return reply.code(400).send({
+        error: "INVALID_SCAN",
+        issues: parsed.error.issues.map(({ path, message }) => ({ path, message })),
+      });
+    }
+    let input: ScanWorkflowInput;
+    try {
+      input = resolvedScanSchema.parse(await prepare(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({
+        error: "ACQUISITION_FAILED",
+        message: error instanceof Error ? error.message : "Repository acquisition failed",
+      });
     }
     const key = sha256Hex(
-      `${parsed.data.repositoryId}\0${parsed.data.commitSha}\0${sha256Hex(parsed.data.content)}\0${parsed.data.deploymentManifest ?? ""}`,
+      `${input.repositoryId}\0${input.commitSha}\0${sha256Hex(input.content)}\0${input.deploymentManifest ?? ""}`,
     );
     const knownId = byKey.get(key);
     if (knownId !== undefined) {
@@ -108,8 +173,8 @@ export function registerScanWorkflowRoutes(
     const record: ScanRecord = {
       scanId,
       idempotencyKey: key,
-      repositoryId: parsed.data.repositoryId,
-      commitSha: parsed.data.commitSha,
+      repositoryId: input.repositoryId,
+      commitSha: input.commitSha,
       stage: "QUEUED",
       attempt: 1,
       createdAt,
@@ -142,7 +207,7 @@ export function registerScanWorkflowRoutes(
       }
     };
     try {
-      const result = await execute(parsed.data, advance);
+      const result = await execute(input, advance);
       record.result = result;
       progress(record, "COMPLETE", "Scan completed");
       if (convex !== undefined && record.convexId !== undefined) {

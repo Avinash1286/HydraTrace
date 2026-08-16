@@ -9,6 +9,8 @@ Production demo: <https://hydratrace.vercel.app>
 
 Engine API: <https://hydratrace-engine.vercel.app>
 
+Operator status: <https://hydratrace.vercel.app/system>
+
 ## What is implemented
 
 - exact `package-lock.json` v2/v3 and `pnpm-lock.yaml` v6-v9 normalization;
@@ -59,7 +61,7 @@ docker compose -f infra/local/docker-compose.yml stop
 | `pnpm verify` | Root, web, and Worker typechecks plus deterministic tests |
 | `pnpm scan:fixture` | Three known-answer imports and duplicate-write proof |
 | `pnpm gate:hydradb` | Live persistence/indexer/restart/strong-path gate |
-| `pnpm benchmark -- 10000` | Deterministic reference-store benchmark |
+| `pnpm benchmark -- --profile=large` | Exact 250k-node/1m-edge reference benchmark |
 | `pnpm cli -- --help` | Scan, incident, gate, JSON/table/SARIF CLI |
 | `pnpm exec convex dev --once` | Validate and push the development control plane |
 | `pnpm exec convex deploy --yes` | Push the production Convex deployment |

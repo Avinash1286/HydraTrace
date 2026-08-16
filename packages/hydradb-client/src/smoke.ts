@@ -30,6 +30,8 @@ export interface HydraDbSmokeResult {
   write: GraphWriteSummary;
   readNodeCount: number;
   readRelationshipCount: number;
+  matchedNodeCount: number;
+  matchedRelationshipCount: number;
   pathCount: number;
   orderedPath: readonly StableId[];
 }
@@ -127,6 +129,22 @@ export async function runHydraDbSmokeProbe(
       `HydraDB smoke read returned ${relationships.length} relationships; expected ${fixture.expectedRelationshipIds.length}`,
     );
   }
+  const matchedNodes = await store.matchNodes({
+    label: "Resolution",
+    equals: { repositoryId: "hydratrace-smoke", sourceSha256: "0".repeat(64) },
+    limit: 10,
+  });
+  const matchedRelationships = await store.matchRelationships({
+    type: "DEPENDS_ON_INSTANCE",
+    equals: { repositoryId: "hydratrace-smoke", sourceSha256: "0".repeat(64) },
+    limit: 10,
+  });
+  if (matchedNodes.length !== fixture.expectedNodeIds.length) {
+    throw new Error(`HydraDB predicate node read returned ${matchedNodes.length} nodes; expected ${fixture.expectedNodeIds.length}`);
+  }
+  if (matchedRelationships.length !== fixture.expectedRelationshipIds.length) {
+    throw new Error(`HydraDB predicate relationship read returned ${matchedRelationships.length} relationships; expected ${fixture.expectedRelationshipIds.length}`);
+  }
   const from = fixture.expectedPath[0];
   const to = fixture.expectedPath.at(-1);
   if (from === undefined || to === undefined) {
@@ -155,6 +173,8 @@ export async function runHydraDbSmokeProbe(
     write,
     readNodeCount: nodes.length,
     readRelationshipCount: relationships.length,
+    matchedNodeCount: matchedNodes.length,
+    matchedRelationshipCount: matchedRelationships.length,
     pathCount: paths.length,
     orderedPath: paths[0]?.nodeIds ?? [],
   };

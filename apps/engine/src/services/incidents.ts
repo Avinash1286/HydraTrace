@@ -1,4 +1,5 @@
 import type { StableId } from "@hydratrace/domain";
+import type { GraphStore } from "@hydratrace/hydradb-client";
 import {
   IncidentCatalog,
   analyzeBlastRadius,
@@ -7,6 +8,12 @@ import {
 } from "@hydratrace/incident-analysis";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import {
+  ensureIncidentCatalogHydrated,
+  loadIncident,
+  loadIncidents,
+  persistIncident,
+} from "./graph-catalog.js";
 
 const stableIdSchema = z.string().regex(/^\d+$/);
 
@@ -16,6 +23,9 @@ const incidentBodySchema = z
     packageName: z.string().trim().min(1).max(214),
     affectedVersions: z.array(z.string().trim().min(1).max(128)).min(1).max(100),
     advisoryId: z.string().trim().min(1).max(256).optional(),
+    advisoryPublishedAt: z.number().int().nonnegative().optional(),
+    advisoryWithdrawnAt: z.number().int().nonnegative().optional(),
+    packagePublishedAt: z.number().int().nonnegative().optional(),
     startsAt: z.number().int().nonnegative().optional(),
     endsAt: z.number().int().nonnegative().optional(),
     environments: z.array(z.string().trim().min(1).max(128)).max(50).optional(),
@@ -49,6 +59,7 @@ const blastQuerySchema = z.object({
 export function registerIncidentRoutes(
   application: FastifyInstance,
   catalog: IncidentCatalog,
+  graphStore: GraphStore,
 ): void {
   application.post("/v1/incidents", async (request, reply) => {
     const parsed = incidentBodySchema.safeParse(request.body);
@@ -66,6 +77,9 @@ export function registerIncidentRoutes(
         ...(parsed.data.advisoryId === undefined
           ? {}
           : { advisoryId: parsed.data.advisoryId }),
+        ...(parsed.data.advisoryPublishedAt === undefined ? {} : { advisoryPublishedAt: parsed.data.advisoryPublishedAt }),
+        ...(parsed.data.advisoryWithdrawnAt === undefined ? {} : { advisoryWithdrawnAt: parsed.data.advisoryWithdrawnAt }),
+        ...(parsed.data.packagePublishedAt === undefined ? {} : { packagePublishedAt: parsed.data.packagePublishedAt }),
         ...(parsed.data.startsAt === undefined
           ? {}
           : { startsAt: parsed.data.startsAt }),
@@ -89,6 +103,7 @@ export function registerIncidentRoutes(
           ? {}
           : { trustContextScore: parsed.data.trustContextScore }),
       });
+      await persistIncident(graphStore, incident);
       return reply.code(201).send({ incident });
     } catch (error) {
       return reply.code(400).send({
@@ -101,7 +116,8 @@ export function registerIncidentRoutes(
   application.get("/v1/incidents", async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_PAGINATION" });
-    const incidents = catalog.listIncidents();
+    const durable = await loadIncidents(graphStore);
+    const incidents = durable.length === 0 ? catalog.listIncidents() : durable;
     return {
       total: incidents.length,
       offset: parsed.data.offset,
@@ -118,7 +134,7 @@ export function registerIncidentRoutes(
     if (incidentId === undefined) {
       return reply.code(400).send({ error: "INVALID_INCIDENT_ID" });
     }
-    const incident = catalog.getIncident(incidentId);
+    const incident = catalog.getIncident(incidentId) ?? await loadIncident(graphStore, incidentId);
     return incident === undefined
       ? reply.code(404).send({ error: "INCIDENT_NOT_FOUND" })
       : { incident };
@@ -132,7 +148,7 @@ export function registerIncidentRoutes(
       if (incidentId === undefined || query === undefined) {
         return reply.code(400).send({ error: "INVALID_BLAST_RADIUS_QUERY" });
       }
-      if (catalog.getIncident(incidentId) === undefined) {
+      if (await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId) === undefined) {
         return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
       }
       try {
@@ -153,7 +169,7 @@ export function registerIncidentRoutes(
       if (incidentId === undefined) {
         return reply.code(400).send({ error: "INVALID_INCIDENT_ID" });
       }
-      if (catalog.getIncident(incidentId) === undefined) {
+      if (await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId) === undefined) {
         return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
       }
       return buildExposureTimeline(catalog, incidentId);
@@ -166,7 +182,7 @@ export function registerIncidentRoutes(
     if (incidentId === undefined || query === undefined) {
       return reply.code(400).send({ error: "INVALID_PATH_QUERY" });
     }
-    if (catalog.getIncident(incidentId) === undefined) {
+    if (await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId) === undefined) {
       return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
     }
     const result = analyzeBlastRadius(catalog, incidentId, query);
@@ -195,7 +211,7 @@ export function registerIncidentRoutes(
         return reply.code(400).send({ error: "INVALID_FINDING_ID" });
       }
       const incidentId = parameters.data.incidentId as StableId;
-      if (catalog.getIncident(incidentId) === undefined) {
+      if (await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId) === undefined) {
         return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
       }
       const result = analyzeBlastRadius(catalog, incidentId, {
