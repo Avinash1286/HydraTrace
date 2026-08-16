@@ -11,5 +11,8 @@ cache/
 *.log
 .DS_Store
 Thumbs.db
+**/.next/
+**/out/
+*.tsbuildinfo
 infra/local/data/
 infra/local/secrets/

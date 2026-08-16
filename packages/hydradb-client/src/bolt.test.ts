@@ -8,7 +8,7 @@ import {
   type Driver,
   type QueryResult,
 } from "neo4j-driver";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HydraDbGraphStore,
   hydraDbConnectionOptionsFromEnv,
@@ -21,6 +21,7 @@ interface CapturedQuery {
 }
 
 describe("HydraDbGraphStore v0.1.1 compatibility", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("maps the graph auth token to the official Bolt connection options", () => {
     expect(
       hydraDbConnectionOptionsFromEnv({
@@ -97,6 +98,54 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
     expect(isInt(call?.parameters.maxLen)).toBe(true);
     expect(isInt(call?.parameters.pathCount)).toBe(true);
     expect(isInt(call?.parameters.resultLimit)).toBe(true);
+  });
+
+  it("uses the strong HTTP path API without losing 63-bit IDs", async () => {
+    const fixture = createHydraDbSmokeFixture();
+    const body = JSON.stringify({
+      rows: [[{
+        type: "path",
+        value: {
+          nodes: fixture.expectedNodeIds.map((id) => ({ id: `__${id}__` })),
+          relationships: fixture.expectedRelationshipIds.map((id) => ({
+            properties: { hydratraceStableId: { Integer: `__${id}__` } },
+          })),
+        },
+      }]],
+    }).replace(/"__(\d+)__"/gu, "$1");
+    const request = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(body),
+    );
+    vi.stubGlobal("fetch", request);
+    const captured: CapturedQuery[] = [];
+    const store = new HydraDbGraphStore(fakeDriver(captured), {
+      consistency: "strong",
+      strongHttp: {
+        url: "http://hydradb.test:8443",
+        authToken: "test-token",
+        namespace: "development",
+      },
+    });
+
+    const paths = await store.findPaths({
+      from: { id: fixture.expectedNodeIds[0]!, label: "Resolution" },
+      to: { id: fixture.expectedNodeIds[3]!, label: "Resolution" },
+      relationshipType: "DEPENDS_ON_INSTANCE",
+      minDepth: 3,
+      maxDepth: 3,
+      limit: 2,
+    });
+
+    expect(paths).toEqual([{
+      nodeIds: fixture.expectedPath,
+      relationshipIds: fixture.expectedRelationshipIds,
+    }]);
+    expect(captured).toHaveLength(0);
+    expect(request).toHaveBeenCalledOnce();
+    expect(String(request.mock.calls[0]?.[1]?.body)).toContain(
+      '"consistency":"strong"',
+    );
   });
 });
 

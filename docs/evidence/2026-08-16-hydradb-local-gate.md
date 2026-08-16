@@ -13,7 +13,7 @@ quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6
 Command:
 
 ```powershell
-.\infra\local\Invoke-PersistenceGate.ps1
+pnpm gate:hydradb
 ```
 
 Final output:
@@ -26,7 +26,8 @@ HydraDB persistence, idempotency, indexing, and three-hop path gate passed.
 
 - Initial write: 4 nodes and 3 relationships created.
 - Immediate repeat: 0 nodes and 0 relationships created; all 4/3 records already existed.
-- Strong read: exactly 4 nodes, 3 relationships, and 1 path.
+- Causal read: exactly 4 nodes, 3 relationships, and 1 path.
+- Strong HTTP read: exactly one ordered three-hop path with lossless 63-bit IDs.
 - Ordered path: `5041991480064782097 -> 8424545952126751068 -> 4380326079291741543 -> 7779488087436019082`.
 - After graph-node restart: the same 4 nodes, 3 relationships, and exact ordered path remained; both writes created 0 records.
 - Post-gate indexer admin endpoint: HTTP 200.
@@ -35,8 +36,8 @@ HydraDB persistence, idempotency, indexing, and three-hop path gate passed.
 ## Repository checks from the same run
 
 ```text
-pnpm verify        -> typecheck passed; 31/31 tests passed
+pnpm verify        -> typecheck passed; 53/53 tests passed
 pnpm scan:fixture  -> 3 snapshots; 72 nodes; 102 relationships; repeat created 0/0
 ```
 
-The earlier filesystem-backed indexer attempt is not counted as evidence: HydraDB v0.1.1 published its first generation and then lost readiness because its local object-store adapter does not support the conditional cursor update used by later cycles. The committed gate now uses persistent MinIO storage, requires at least four healthy cycles with zero consecutive failures, and requires another successful cycle after restart.
+The earlier filesystem-backed indexer attempt is not counted as evidence: HydraDB v0.1.1 published its first generation and then lost readiness because its local object-store adapter does not support the conditional cursor update used by later cycles. The committed gate uses persistent MinIO, requires at least three healthy cycles with zero consecutive failures, restarts the node, and finishes with a strong exact-path query.

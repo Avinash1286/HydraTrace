@@ -1,6 +1,6 @@
 # Correctness gates
 
-The August 15–16 foundation is accepted when:
+The project is accepted when:
 
 1. Known-answer package-lock and pnpm fixtures normalize to exact expected counts and dependency paths.
 2. Parsing the same content twice produces the same identifiers.
@@ -8,3 +8,9 @@ The August 15–16 foundation is accepted when:
 4. OSV results are associated with exact package versions and can be served from a content-addressed cache.
 5. The HydraDB smoke fixture survives a graph-node restart and the separate indexer reports a fresh cycle.
 6. A bounded query returns the exact ordered vulnerable path.
+7. Exact and historical blast-radius cases match the known-answer services and paths.
+8. Installed, static, runtime, and unknown reachability remain distinct evidence states.
+9. Remediation covers all original paths and passes only after a strong zero-path query.
+10. Convex returns ordered scan events after the originating engine request completes.
+11. Web/engine production URLs pass health, CORS, and a real lockfile ingestion.
+12. AI provider output cannot introduce an unapproved evidence reference.

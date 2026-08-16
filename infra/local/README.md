@@ -21,10 +21,14 @@ quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6
 2. From PowerShell at the repository root, run:
 
 ```powershell
-.\infra\local\Invoke-PersistenceGate.ps1
+pnpm gate:hydradb
 ```
 
-The gate creates an immutable four-node/three-edge fixture, reads it back, verifies one exact three-hop path, checks idempotent re-import, requires at least four healthy indexer cycles and a relationship-specific index generation, restarts the graph node, repeats the strong read, and confirms the indexer remains healthy afterward.
+The TypeScript command is the cross-platform primary gate. The PowerShell script
+remains available for Windows environments whose endpoint protection permits local
+PowerShell automation.
+
+The gate creates an immutable four-node/three-edge fixture, reads it back, verifies one exact three-hop path, checks idempotent re-import, requires at least three healthy indexer cycles with zero failures, restarts the graph node, proves persistence causally, performs one lossless strong path query, and confirms the indexer remains healthy afterward.
 
 MinIO data and HydraDB caches are retained under `infra/local/data`. The script does not remove containers or data. Stop services without deleting storage using:
 

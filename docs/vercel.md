@@ -1,43 +1,26 @@
-# Vercel deployment
+# Vercel deployment notes
 
-HydraTrace uses Vercel's native Git integration instead of GitHub Actions. Every branch push creates a preview deployment, and a successful build from `main` becomes the production deployment.
+HydraTrace uses Vercel CLI/native projects and intentionally has no GitHub Actions.
 
-Production URL: <https://hydratrace-engine.vercel.app>
+## Engine
 
-## Project settings
+Project root: `apps/engine`. Workspace TypeScript packages are bundled with esbuild
+into one Vercel Node function because Vercel's Fastify file tracer does not retain
+uncompiled pnpm workspace source reliably. The placeholder `api/index.mjs` is replaced
+during `vercel-build`; the build first runs `pnpm verify` and `pnpm scan:fixture`.
 
-Configure one Vercel project with these settings:
+Production: <https://hydratrace-engine.vercel.app>
 
-- Git repository: `Avinash1286/HydraTrace`
-- Root Directory: `apps/engine`
-- Include source files outside the Root Directory: enabled
-- Framework: Fastify (pinned in `apps/engine/vercel.json`)
-- Node.js: 24.x
-- Production branch: `main`
-- Build Command: leave unset
-- Output Directory: leave unset
+## Web
 
-The nearest package's `vercel-build` hook runs `pnpm verify` and `pnpm scan:fixture` before Vercel bundles the Fastify function. A failed typecheck, test, or fixture assertion therefore fails the deployment.
+Project root: `apps/web`. It is a static Next.js export (`out/`) because the dashboard
+has no server-only route. This also avoids shipping an unnecessary Next server function.
 
-The engine pins TypeScript 5.9 for Vercel's Fastify bundler while the workspace verification remains on TypeScript 7. This isolates a compiler-emission compatibility boundary without weakening the repository typecheck.
-
-## CLI workflow
-
-The CLI version is pinned in commands without adding it to the application bundle:
-
-```powershell
-pnpm dlx vercel@59.1.3 link --repo
-pnpm dlx vercel@59.1.3 pull --yes --environment=preview
-pnpm dlx vercel@59.1.3 build
-pnpm dlx vercel@59.1.3 deploy
-```
-
-Use `pnpm dlx vercel@59.1.3 deploy --prod` only when intentionally creating a production deployment. The `.vercel` link directory and pulled environment files are ignored by Git.
+Production: <https://hydratrace.vercel.app>
 
 ## Runtime boundaries
 
-The OSV response cache uses memory on Vercel because a Function's project filesystem is not durable. It remains a content-addressed file cache during ordinary local development.
-
-Without `HYDRADB_BOLT_URI` and `HYDRADB_AUTH_TOKEN`, the deployed engine deliberately uses its reference in-memory graph store. This is suitable for endpoint and ingestion previews, but data can disappear between Function instances and must not be presented as production persistence.
-
-The planned HydraDB node is private inside Zerops. Do not expose raw Bolt publicly merely to connect Vercel. A production connection requires an authenticated, encrypted network bridge or a separately deployed engine that can reach HydraDB privately. Until that exists, the local/Zerops persistence gate remains authoritative.
+Convex is the persistent serverless scan control plane. The Vercel engine's reference
+graph store is intentionally ephemeral until a private route to HydraDB exists. Raw
+Bolt must not be exposed publicly. Deploy an engine beside HydraDB in Zerops or use an
+authenticated encrypted private network bridge.

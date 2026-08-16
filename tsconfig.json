@@ -20,9 +20,14 @@
       "@hydratrace/graph-schema": ["./packages/graph-schema/src/index.ts"],
       "@hydratrace/lockfile-parsers": ["./packages/lockfile-parsers/src/index.ts"],
       "@hydratrace/hydradb-client": ["./packages/hydradb-client/src/index.ts"],
-      "@hydratrace/ecosystem-enrichment": ["./packages/ecosystem-enrichment/src/index.ts"]
+      "@hydratrace/ecosystem-enrichment": ["./packages/ecosystem-enrichment/src/index.ts"],
+      "@hydratrace/incident-analysis": ["./packages/incident-analysis/src/index.ts"],
+      "@hydratrace/reachability": ["./packages/reachability/src/index.ts"],
+      "@hydratrace/package-intelligence": ["./packages/package-intelligence/src/index.ts"],
+      "@hydratrace/remediation": ["./packages/remediation/src/index.ts"],
+      "@hydratrace/ai-contracts": ["./packages/ai-contracts/src/index.ts"]
     }
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts", "vitest.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "benchmarks/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist", "apps/web", "apps/ai-gateway"]
 }

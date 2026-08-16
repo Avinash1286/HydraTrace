@@ -3,25 +3,8 @@ param()
 
 $ErrorActionPreference = "Stop"
 $composeFile = Join-Path $PSScriptRoot "docker-compose.yml"
-$secretScript = Join-Path $PSScriptRoot "Initialize-HydraDbSecret.ps1"
 $secretPath = Join-Path $PSScriptRoot "secrets/auth-token"
 $workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
-
-function Invoke-CheckedNativeCommand {
-  param(
-    [Parameter(Mandatory)]
-    [string]$Command,
-
-    [string[]]$Arguments = @()
-  )
-
-  & $Command @Arguments
-  $exitCode = $LASTEXITCODE
-  if ($exitCode -ne 0) {
-    $invocation = (@($Command) + $Arguments) -join " "
-    throw "Native command '$invocation' failed with exit code $exitCode."
-  }
-}
 
 function Wait-HydraDbNodeReady {
   param(
@@ -108,8 +91,22 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   throw "Docker is not installed or not on PATH. Install/start Docker Desktop, then rerun this command."
 }
 
-& $secretScript
-Invoke-CheckedNativeCommand -Command "docker" -Arguments @("compose", "-f", $composeFile, "up", "-d", "hydradb-node")
+if (-not (Test-Path -LiteralPath $secretPath)) {
+  $secretDirectory = Split-Path -Parent $secretPath
+  [System.IO.Directory]::CreateDirectory($secretDirectory) | Out-Null
+  $bytes = [byte[]]::new(48)
+  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  [System.IO.File]::WriteAllText(
+    $secretPath,
+    [Convert]::ToBase64String($bytes),
+    [System.Text.UTF8Encoding]::new($false)
+  )
+}
+$tokenLength = [System.IO.File]::ReadAllText($secretPath).Trim().Length
+if ($tokenLength -lt 32) { throw "HydraDB auth token must contain at least 32 characters." }
+
+docker compose -f $composeFile up -d hydradb-node
+if ($LASTEXITCODE -ne 0) { throw "docker compose failed to start hydradb-node." }
 Wait-HydraDbNodeReady
 
 $env:HYDRADB_BOLT_URI = "bolt://127.0.0.1:7687"
@@ -123,13 +120,17 @@ $env:HYDRADB_AUTH_TOKEN = [System.IO.File]::ReadAllText($secretPath).Trim()
 
 Push-Location $workspaceRoot
 try {
-  Invoke-CheckedNativeCommand -Command "pnpm" -Arguments @("smoke:hydradb")
-  Invoke-CheckedNativeCommand -Command "docker" -Arguments @("compose", "-f", $composeFile, "up", "-d", "hydradb-indexer")
+  pnpm smoke:hydradb
+  if ($LASTEXITCODE -ne 0) { throw "The HydraDB smoke probe failed." }
+  docker compose -f $composeFile up -d hydradb-indexer
+  if ($LASTEXITCODE -ne 0) { throw "docker compose failed to start hydradb-indexer." }
   $successfulCyclesBeforeRestart = Wait-HydraDbIndexerHealthy
 
-  Invoke-CheckedNativeCommand -Command "docker" -Arguments @("compose", "-f", $composeFile, "restart", "hydradb-node")
+  docker compose -f $composeFile restart hydradb-node
+  if ($LASTEXITCODE -ne 0) { throw "docker compose failed to restart hydradb-node." }
   Wait-HydraDbNodeReady
-  Invoke-CheckedNativeCommand -Command "pnpm" -Arguments @("smoke:hydradb")
+  pnpm smoke:hydradb
+  if ($LASTEXITCODE -ne 0) { throw "The post-restart HydraDB smoke probe failed." }
   $null = Wait-HydraDbIndexerHealthy -MinimumSuccessfulCycles ($successfulCyclesBeforeRestart + 1)
   Write-Output "HydraDB persistence, idempotency, indexing, and three-hop path gate passed."
 } finally {

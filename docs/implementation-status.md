@@ -1,41 +1,36 @@
-# Implementation status
+# Implementation status — 2026-08-16
 
-## August 15–16 foundation
+## Complete and verified
 
-Completed locally:
+- canonical IDs, provenance, temporal contracts, package-lock and pnpm parsing;
+- idempotent graph conversion/writes and deployment-manifest validation;
+- exact/temporal blast radius, bounded paths, risk, reachability, neighborhood reasons;
+- safe remediation simulation, set cover, before/after diff, strong zero-path verification;
+- OSV, deps.dev, and npm metadata clients with bounded caches;
+- CLI, Markdown/JSON/SARIF reports, grounded copilot, deterministic fallback;
+- Convex development and production deployments with durable scan events;
+- Next.js dashboard and Fastify engine production deployments on Vercel;
+- live pinned HydraDB/MinIO/indexer persistence and strong-read gate;
+- deterministic 10k reference benchmark and live HydraDB benchmark.
 
-- fresh Git and pnpm workspace baseline;
-- deterministic nonnegative 63-bit canonical IDs;
-- exact graph schema and evidence provenance contracts;
-- `package-lock.json` v2/v3 parser;
-- `pnpm-lock.yaml` v6–v9 parser, including peer contexts and preserved workspace links;
-- immutable snapshot, resolution, package, package-version, deployment, and service graph records;
-- idempotent in-memory reference store and HydraDB adapter contract;
-- Acme Commerce fixtures with exact expected paths and negative controls;
-- deployment-manifest normalization;
-- OSV querybatch pagination, full-record retrieval, and content-addressed caching;
-- Fastify health, readiness, exact lockfile-ingestion, and OSV endpoints;
-- Vercel Git deployments with typecheck, test, and fixture gates;
-- pinned local and Zerops HydraDB node/indexer configurations.
-
-Reproducible checks:
+Verification snapshot:
 
 ```text
-pnpm verify         TypeScript plus deterministic unit/integration tests
-pnpm scan:fixture   Three repositories, exact graph counts, zero duplicate retry
-pnpm smoke:osv      Real exact-version OSV query with local response cache
+pnpm verify         19 files / 53 tests passed
+pnpm scan:fixture   3 snapshots, 72 nodes, 102 relationships, retry 0/0
+pnpm gate:hydradb   persistence, idempotency, indexer, restart, strong path passed
+Vercel              web + engine HTTP 200; production scan completed
+Convex              production scan returned 7 durable ordered events
 ```
 
-Infrastructure-dependent gate:
+## Account-owned activation remaining
 
-```powershell
-.\infra\local\Invoke-PersistenceGate.ps1
-```
+The code is complete, but two external deployments cannot be activated without
+the account owner:
 
-That gate cannot run until Docker Desktop is installed and started. The equivalent Zerops gate requires the user's Zerops project, private Object Storage service, and secret configuration. A listening port or readiness response does not count as completion; persistence, relationship-specific indexing, and the exact three-hop path must all pass.
+1. Cloudflare: authorize `wrangler`, set the gateway secret, and deploy the Worker.
+2. Zerops: provide an access token/project, Object Storage, two services, and graph secret.
 
-Vercel deploys the Fastify engine as a previewable Function and replaces the removed GitHub Actions workflow. Until Vercel has a secure route to the private HydraDB service, those deployments use the non-durable in-memory reference store and are not evidence of production graph persistence. See `docs/vercel.md`.
-
-## Not part of this milestone
-
-Blast-radius incident queries, temporal replay, reachability, neighborhood intelligence, remediation, Convex orchestration, the web product, and AI are subsequent milestones. The current engine endpoints are an ingestion foundation, not a finished public API.
+The public Vercel engine currently uses its in-memory reference graph while Convex
+durably stores workflow state. It must not be described as production graph
+persistence until the private Zerops HydraDB connection is activated.

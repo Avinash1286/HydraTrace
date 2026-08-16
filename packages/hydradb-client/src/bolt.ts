@@ -37,8 +37,12 @@ import {
 
 export interface HydraDbConnectionOptions {
   uri: string;
+  httpUrl?: string;
   authToken?: string;
   database?: string;
+  namespace?: string;
+  graphId?: string;
+  cellId?: string;
   batchSize?: number;
   consistency?: "causal" | "strong";
 }
@@ -82,6 +86,18 @@ export function hydraDbConnectionOptionsFromEnv(
     authToken,
     database,
     consistency: rawConsistency,
+    ...(environment.HYDRADB_HTTP_URL?.trim()
+      ? { httpUrl: environment.HYDRADB_HTTP_URL.trim() }
+      : {}),
+    ...(environment.HYDRADB_NAMESPACE?.trim()
+      ? { namespace: environment.HYDRADB_NAMESPACE.trim() }
+      : {}),
+    ...(environment.HYDRADB_GRAPH_ID?.trim()
+      ? { graphId: environment.HYDRADB_GRAPH_ID.trim() }
+      : {}),
+    ...(environment.HYDRADB_CELL_ID?.trim()
+      ? { cellId: environment.HYDRADB_CELL_ID.trim() }
+      : {}),
   };
 }
 
@@ -105,6 +121,15 @@ export class HydraDbGraphStore implements GraphStore {
   readonly #database: string | undefined;
   readonly #batchSize: number;
   readonly #consistency: "causal" | "strong";
+  readonly #strongHttp:
+    | {
+        url: string;
+        authToken: string;
+        namespace: string;
+        graphId: string;
+        cellId: string;
+      }
+    | undefined;
 
   constructor(
     driver: Driver,
@@ -112,12 +137,30 @@ export class HydraDbGraphStore implements GraphStore {
       database?: string;
       batchSize?: number;
       consistency?: "causal" | "strong";
+      strongHttp?: {
+        url: string;
+        authToken: string;
+        namespace?: string;
+        graphId?: string;
+        cellId?: string;
+      };
     } = {},
   ) {
     this.#driver = driver;
     this.#database = options.database;
-    this.#batchSize = options.batchSize ?? 500;
+    // HydraDB v0.1.1's parser rejects long OR chains; ten IDs stays within
+    // its expression-depth ceiling while retaining bounded batching.
+    this.#batchSize = options.batchSize ?? 10;
     this.#consistency = options.consistency ?? "causal";
+    this.#strongHttp = options.strongHttp === undefined
+      ? undefined
+      : {
+          url: options.strongHttp.url.replace(/\/$/u, ""),
+          authToken: options.strongHttp.authToken,
+          namespace: options.strongHttp.namespace ?? "default",
+          graphId: options.strongHttp.graphId ?? "default",
+          cellId: options.strongHttp.cellId ?? "cell-0",
+        };
     if (!Number.isInteger(this.#batchSize) || this.#batchSize < 1) {
       throw new RangeError("batchSize must be a positive integer");
     }
@@ -130,6 +173,19 @@ export class HydraDbGraphStore implements GraphStore {
       ...(options.consistency === undefined
         ? {}
         : { consistency: options.consistency }),
+      ...(options.httpUrl === undefined || options.authToken === undefined
+        ? {}
+        : {
+            strongHttp: {
+              url: options.httpUrl,
+              authToken: options.authToken,
+              ...(options.namespace === undefined
+                ? {}
+                : { namespace: options.namespace }),
+              ...(options.graphId === undefined ? {} : { graphId: options.graphId }),
+              ...(options.cellId === undefined ? {} : { cellId: options.cellId }),
+            },
+          }),
     });
   }
 
@@ -140,13 +196,27 @@ export class HydraDbGraphStore implements GraphStore {
   async write(records: GraphRecords): Promise<GraphWriteSummary> {
     const nodes = deduplicate(records.nodes, "node");
     const relationships = deduplicate(records.relationships, "relationship");
-    const requiredNodeIds = new Set<StableId>(nodes.keys());
+    const requiredNodes = new Map<StableId, NodeLabel>();
+    for (const node of nodes.values()) requiredNodes.set(node.id, node.label);
     for (const relationship of relationships.values()) {
-      requiredNodeIds.add(relationship.from.id);
-      requiredNodeIds.add(relationship.to.id);
+      for (const endpoint of [relationship.from, relationship.to]) {
+        const knownLabel = requiredNodes.get(endpoint.id);
+        if (knownLabel !== undefined && knownLabel !== endpoint.label) {
+          throw new MissingGraphEndpointError(relationship.id, endpoint.id);
+        }
+        requiredNodes.set(endpoint.id, endpoint.label);
+      }
     }
 
-    const storedNodes = await this.getNodes([...requiredNodeIds]);
+    const storedNodes: GraphNodeRecord[] = [];
+    for (const label of NODE_LABELS) {
+      const ids = [...requiredNodes]
+        .filter(([, knownLabel]) => knownLabel === label)
+        .map(([id]) => id);
+      for (const batch of batches(ids, this.#batchSize)) {
+        storedNodes.push(...(await this.#readNodes(label, batch)));
+      }
+    }
     const storedNodesById = new Map(storedNodes.map((node) => [node.id, node]));
     for (const node of nodes.values()) {
       const existing = storedNodesById.get(node.id);
@@ -168,9 +238,39 @@ export class HydraDbGraphStore implements GraphStore {
       }
     }
 
-    const storedRelationships = await this.getRelationships([
-      ...relationships.keys(),
-    ]);
+    const storedRelationships: GraphRelationshipRecord[] = [];
+    const relationshipGroups = new Map<
+      string,
+      {
+        type: RelationshipType;
+        fromLabel: NodeLabel;
+        toLabel: NodeLabel;
+        ids: StableId[];
+      }
+    >();
+    for (const relationship of relationships.values()) {
+      const key = `${relationship.type}|${relationship.from.label}|${relationship.to.label}`;
+      const group = relationshipGroups.get(key) ?? {
+        type: relationship.type,
+        fromLabel: relationship.from.label,
+        toLabel: relationship.to.label,
+        ids: [],
+      };
+      group.ids.push(relationship.id);
+      relationshipGroups.set(key, group);
+    }
+    for (const group of relationshipGroups.values()) {
+      for (const batch of batches(group.ids, this.#batchSize)) {
+        storedRelationships.push(
+          ...(await this.#readRelationships(
+            group.type,
+            group.fromLabel,
+            group.toLabel,
+            batch,
+          )),
+        );
+      }
+    }
     const storedRelationshipsById = new Map(
       storedRelationships.map((relationship) => [relationship.id, relationship]),
     );
@@ -244,6 +344,15 @@ export class HydraDbGraphStore implements GraphStore {
     const { direction, minDepth, maxDepth, limit } = validatePathQuery(query);
     const relDirection =
       direction === "out" ? "outgoing" : direction === "in" ? "incoming" : "both";
+    if (this.#consistency === "strong") {
+      return this.#findPathsStrongHttp(
+        query,
+        relDirection,
+        minDepth,
+        maxDepth,
+        limit,
+      );
+    }
     const cypher = [
       "CALL algo.SPpaths({",
       "  sourceNode: $source,",
@@ -255,14 +364,18 @@ export class HydraDbGraphStore implements GraphStore {
       "  resultLimit: $resultLimit",
       "}) YIELD path RETURN path",
     ].join("\n");
-    const result = await this.#run(cypher, {
-      source: databaseId(query.from.id),
-      target: databaseId(query.to.id),
-      maxLen: int(maxDepth),
-      relDirection,
-      pathCount: int(limit),
-      resultLimit: int(limit),
-    });
+    const result = await this.#run(
+      cypher,
+      {
+        source: databaseId(query.from.id),
+        target: databaseId(query.to.id),
+        maxLen: int(maxDepth),
+        relDirection,
+        pathCount: int(limit),
+        resultLimit: int(limit),
+      },
+      "read",
+    );
 
     const paths: GraphPath[] = [];
     for (const record of result.records) {
@@ -308,6 +421,7 @@ export class HydraDbGraphStore implements GraphStore {
         `RETURN n.id AS id${propertyProjection("n", keys)}`,
       ].join("\n"),
       idParameters(ids),
+      "read",
     );
     return result.records.map((record) => ({
       id: stableIdValue(record.get("id"), "node id"),
@@ -330,6 +444,7 @@ export class HydraDbGraphStore implements GraphStore {
         `RETURN r.${RELATIONSHIP_STABLE_ID_PROPERTY} AS id, from.id AS fromId, to.id AS toId${propertyProjection("r", keys)}`,
       ].join("\n"),
       idParameters(ids),
+      "read",
     );
     return result.records.map((record) => ({
       id: stableIdValue(record.get("id"), "relationship id"),
@@ -406,18 +521,136 @@ export class HydraDbGraphStore implements GraphStore {
   async #run(
     cypher: string,
     parameters: Record<string, unknown>,
+    access: "read" | "write" = "write",
   ): Promise<QueryResult> {
     const session = this.#driver.session(
       this.#database === undefined ? {} : { database: this.#database },
     );
     try {
       return await session.run(cypher, parameters, {
-        metadata: { "hydradb.consistency": this.#consistency },
+        // HydraDB v0.1.1 permits strong consistency only for reads. Strong
+        // path reads use the HTTP implementation below because its Bolt path
+        // response is not decoded correctly by neo4j-driver 6.
+        metadata: {
+          "hydradb.consistency": "causal",
+        },
       });
     } finally {
       await session.close();
     }
   }
+
+  async #findPathsStrongHttp(
+    query: GraphPathQuery,
+    relDirection: "outgoing" | "incoming" | "both",
+    minDepth: number,
+    maxDepth: number,
+    limit: number,
+  ): Promise<readonly GraphPath[]> {
+    const http = this.#strongHttp;
+    if (http === undefined) {
+      throw new Error(
+        "HYDRADB_HTTP_URL and HYDRADB_AUTH_TOKEN are required for strong HydraDB reads",
+      );
+    }
+    const response = await fetch(
+      `${http.url}/v1/graphs/${encodeURIComponent(http.graphId)}/query`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${http.authToken}`,
+          "content-type": "application/json",
+          "x-graph-namespace": http.namespace,
+        },
+        body: JSON.stringify({
+          cell_id: http.cellId,
+          consistency: "strong",
+          query: [
+            "CALL algo.SPpaths({",
+            `sourceNode: ${query.from.id},`,
+            `targetNode: ${query.to.id},`,
+            `relTypes: ['${query.relationshipType}'],`,
+            `maxLen: ${maxDepth},`,
+            `relDirection: '${relDirection}',`,
+            `pathCount: ${limit},`,
+            `resultLimit: ${limit}`,
+            "}) YIELD path RETURN path",
+          ].join(" "),
+        }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `HydraDB strong path query failed with HTTP ${response.status}: ${body.slice(0, 500)}`,
+      );
+    }
+    return parseStrongHttpPaths(body, minDepth, maxDepth);
+  }
+}
+
+function parseStrongHttpPaths(
+  body: string,
+  minDepth: number,
+  maxDepth: number,
+): readonly GraphPath[] {
+  // JSON has no 64-bit integer type. Quote only long integer tokens before
+  // parsing so canonical HydraTrace IDs never pass through an IEEE-754 number.
+  const lossless = body.replace(
+    /([:\[,]\s*)(-?\d{16,})(?=\s*[,}\]])/gu,
+    '$1"$2"',
+  );
+  const payload = JSON.parse(lossless) as {
+    rows?: Array<
+      Array<{
+        type?: string;
+        value?: {
+          nodes?: Array<{ id?: string | number }>;
+          relationships?: Array<{
+            properties?: {
+              hydratraceStableId?: { Integer?: string | number };
+              id?: { Integer?: string | number };
+            };
+          }>;
+        };
+      }>
+    >;
+  };
+  const paths: GraphPath[] = [];
+  for (const row of payload.rows ?? []) {
+    const cell = row[0];
+    if (cell?.type !== "path" || cell.value === undefined) continue;
+    const nodeIds = (cell.value.nodes ?? []).map((node) =>
+      stableIdText(node.id, "HTTP path node id"),
+    );
+    const relationshipIds = (cell.value.relationships ?? []).map(
+      (relationship) =>
+        stableIdText(
+          relationship.properties?.hydratraceStableId?.Integer ??
+            relationship.properties?.id?.Integer,
+          "HTTP path relationship canonical id",
+        ),
+    );
+    if (
+      relationshipIds.length >= minDepth &&
+      relationshipIds.length <= maxDepth &&
+      nodeIds.length === relationshipIds.length + 1
+    ) {
+      paths.push({ nodeIds, relationshipIds });
+    }
+  }
+  return paths;
+}
+
+function stableIdText(
+  value: string | number | undefined,
+  context: string,
+): StableId {
+  if (value === undefined) throw new TypeError(`HydraDB omitted ${context}`);
+  const text = String(value);
+  if (!/^\d+$/u.test(text)) throw new TypeError(`HydraDB returned invalid ${context}`);
+  return text as StableId;
 }
 
 const PROVENANCE_KEYS = [

@@ -12,18 +12,25 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "pnpm run typecheck && pnpm run test",
+    "verify": "pnpm run typecheck && pnpm --filter @hydratrace/web typecheck && pnpm --filter @hydratrace/ai-gateway typecheck && pnpm run test",
     "scan:fixture": "tsx apps/engine/src/commands/scan-fixture.ts",
     "smoke:osv": "tsx apps/engine/src/commands/osv-smoke.ts",
     "smoke:hydradb": "node --env-file-if-exists=.env --import tsx apps/engine/src/commands/hydradb-smoke.ts",
-    "start:engine": "node --env-file-if-exists=.env --import tsx apps/engine/src/server.ts"
+    "gate:hydradb": "tsx apps/engine/src/commands/persistence-gate.ts",
+    "start:engine": "node --env-file-if-exists=.env --import tsx apps/engine/src/server.ts",
+    "cli": "tsx apps/cli/src/cli.ts",
+    "dev:web": "pnpm --filter @hydratrace/web dev",
+    "build:web": "pnpm --filter @hydratrace/web build",
+    "typecheck:gateway": "pnpm --filter @hydratrace/ai-gateway typecheck",
+    "benchmark": "tsx benchmarks/graph-generator/run.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
     "tsx": "4.23.12",
     "turbo": "2.10.10",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "convex": "1.44.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild"]

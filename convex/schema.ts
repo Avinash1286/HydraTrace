@@ -1,0 +1,57 @@
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  scans: defineTable({
+    stableId: v.string(),
+    idempotencyKey: v.string(),
+    repositoryId: v.string(),
+    commitSha: v.string(),
+    stage: v.string(),
+    attempt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    canceledAt: v.optional(v.number()),
+    result: v.optional(v.any()),
+    error: v.optional(v.string()),
+  }).index("by_stable_id", ["stableId"]).index("by_idempotency", ["idempotencyKey"]),
+  scanEvents: defineTable({
+    scanId: v.id("scans"),
+    sequence: v.number(),
+    stage: v.string(),
+    at: v.number(),
+    message: v.string(),
+  }).index("by_scan_sequence", ["scanId", "sequence"]),
+  jobs: defineTable({
+    scanId: v.id("scans"),
+    type: v.string(),
+    status: v.string(),
+    attempt: v.number(),
+    availableAt: v.number(),
+    leaseOwner: v.optional(v.string()),
+    leaseExpiresAt: v.optional(v.number()),
+    heartbeatAt: v.optional(v.number()),
+    signature: v.string(),
+    lastError: v.optional(v.string()),
+  }).index("by_status_available", ["status", "availableAt"]).index("by_scan", ["scanId"]),
+  incidents: defineTable({
+    stableId: v.string(),
+    packageName: v.string(),
+    affectedVersions: v.array(v.string()),
+    startsAt: v.optional(v.number()),
+    endsAt: v.optional(v.number()),
+    createdAt: v.number(),
+  }).index("by_stable_id", ["stableId"]),
+  aiRuns: defineTable({
+    incidentId: v.id("incidents"),
+    evidenceHash: v.string(),
+    promptVersion: v.string(),
+    provider: v.string(),
+    status: v.string(),
+    latencyMs: v.optional(v.number()),
+    evidenceRefs: v.array(v.string()),
+    output: v.optional(v.any()),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_evidence_prompt", ["evidenceHash", "promptVersion"]),
+});

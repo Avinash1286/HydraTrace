@@ -1,0 +1,9 @@
+{
+  "name": "@hydratrace/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "hydratrace": "./src/cli.ts" },
+  "dependencies": { "@hydratrace/domain": "workspace:*" },
+  "devDependencies": { "tsx": "4.23.12" }
+}
