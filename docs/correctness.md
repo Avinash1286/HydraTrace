@@ -14,3 +14,6 @@ The project is accepted when:
 10. Convex returns ordered scan events after the originating engine request completes.
 11. Web/engine production URLs pass health, CORS, and a real lockfile ingestion.
 12. AI provider output cannot introduce an unapproved evidence reference.
+13. Eight fixed-seed graph shapes imported into live HydraDB return exactly the independent reference paths.
+14. An interrupted signed engine job resumes idempotently from its durable checkpoint.
+15. Lost progress callbacks cannot erase a completed engine result or trigger duplicate ingestion.

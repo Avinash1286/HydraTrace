@@ -80,12 +80,18 @@ export interface BlastRadiusFinding {
   serviceId: string;
   deploymentId: StableId;
   repositoryId: string;
+  commitSha: string;
+  lockfileSourceRef: string;
+  lockfileSha256: string;
   environment: string;
   criticality: DeploymentManifest["criticality"];
   snapshotId: StableId;
   affectedPackageVersionId: StableId;
   affectedPackageName: string;
   affectedVersion: string;
+  advisoryId?: string;
+  incidentSource: "manual" | "osv" | "both";
+  windowSource: string;
   firstExposedAt: number;
   lastExposedAt: number | null;
   direct: boolean;

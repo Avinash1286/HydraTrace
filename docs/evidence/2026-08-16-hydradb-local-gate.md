@@ -33,10 +33,16 @@ HydraDB persistence, idempotency, indexing, and three-hop path gate passed.
 - Post-gate indexer admin endpoint: HTTP 200.
 - Post-gate indexer metrics: ready 1; 11 cycles; 11 successful; 0 failed; 0 consecutive failures; 1 `DEPENDS_ON_INSTANCE` generation published.
 
+The gate was rerun on 2026-08-20 after adding the property comparison. The
+post-restart live suite matched all complete paths for chain, branches, shared
+transitive dependencies, multiple versions, a cycle, depth, an isolated target,
+and fan-out. The indexer reported 16 successful cycles, 0 failed cycles, and 2
+published `DEPENDS_ON_INSTANCE` generations.
+
 ## Repository checks from the same run
 
 ```text
-pnpm verify        -> typecheck passed; 53/53 tests passed
+pnpm verify        -> typecheck passed; 88/88 tests passed
 pnpm scan:fixture  -> 3 snapshots; 72 nodes; 102 relationships; repeat created 0/0
 ```
 

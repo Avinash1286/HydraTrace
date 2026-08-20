@@ -3,6 +3,11 @@ import { stableIdFromCanonicalKey } from "@hydratrace/domain";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ScanStage, ScanWorkflowInput } from "./scans.js";
+import {
+  jobStatusStoreFromEnvironment,
+  type DurableJobStatus,
+  type JobStatusStore,
+} from "./job-status-store.js";
 
 const dispatchSchema = z.object({
   jobId: z.string().trim().min(1).max(256),
@@ -18,16 +23,6 @@ const dispatchSchema = z.object({
     deploymentManifest: z.string().min(1).max(100_000).optional(),
   }).strict(),
 }).strict();
-
-interface JobStatus {
-  jobId: string;
-  idempotencyKey: string;
-  engineJobId: string;
-  state: "ACKNOWLEDGED" | ScanStage;
-  updatedAt: number;
-  result?: unknown;
-  error?: string;
-}
 
 export class SignedRequestVerifier {
   readonly #seen = new Map<string, number>();
@@ -81,9 +76,10 @@ export function registerSignedJobRoutes(
     progress: (stage: ScanStage, message: string) => void,
   ) => Promise<unknown>,
   sharedSecret = process.env.HYDRATRACE_JOB_SHARED_SECRET,
+  statusStore: JobStatusStore = jobStatusStoreFromEnvironment(),
 ): void {
   const verifier = sharedSecret === undefined ? undefined : new SignedRequestVerifier(sharedSecret);
-  const jobs = new Map<string, JobStatus>();
+  const running = new Set<string>();
 
   application.post("/v1/internal/jobs/dispatch", { config: { rawBody: true } }, async (request, reply) => {
     if (verifier === undefined) return reply.code(503).send({ error: "SIGNED_DISPATCH_NOT_CONFIGURED" });
@@ -92,24 +88,29 @@ export function registerSignedJobRoutes(
     catch (error) { return reply.code(401).send({ error: "INVALID_SIGNATURE", message: error instanceof Error ? error.message : "Signature validation failed" }); }
     const parsed = dispatchSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_JOB_DISPATCH" });
-    const existing = jobs.get(parsed.data.idempotencyKey);
-    if (existing !== undefined) return reply.code(200).send(existing);
+    const existing = await statusStore.get(parsed.data.idempotencyKey);
+    if (existing?.state === "COMPLETE" || running.has(parsed.data.idempotencyKey)) {
+      return reply.code(200).send(existing);
+    }
     const engineJobId = stableIdFromCanonicalKey(`engine-job:${parsed.data.idempotencyKey}`);
-    const job: JobStatus = {
+    const job: DurableJobStatus = {
       jobId: parsed.data.jobId,
       idempotencyKey: parsed.data.idempotencyKey,
       engineJobId,
       state: "ACKNOWLEDGED",
+      checkpointStage: existing?.checkpointStage ?? "ACKNOWLEDGED",
       updatedAt: Date.now(),
     };
-    jobs.set(job.idempotencyKey, job);
+    await statusStore.put(job);
+    running.add(job.idempotencyKey);
     const execution = executeDispatchedJob(
       job,
       parsed.data.scan,
       parsed.data.callbackUrl,
       execute,
       verifier.secret,
-    );
+      statusStore,
+    ).finally(() => running.delete(job.idempotencyKey));
     // Vercel may freeze a function as soon as its response is returned. Await
     // bounded work there so progress/final callbacks cannot be abandoned.
     if (process.env.VERCEL === "1") await execution;
@@ -123,24 +124,32 @@ export function registerSignedJobRoutes(
     catch (error) { return reply.code(401).send({ error: "INVALID_SIGNATURE", message: error instanceof Error ? error.message : "Signature validation failed" }); }
     const parsed = z.object({ idempotencyKey: z.string().regex(/^[0-9a-f]{64}$/u) }).safeParse(request.params);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_IDEMPOTENCY_KEY" });
-    const job = jobs.get(parsed.data.idempotencyKey);
+    const job = await statusStore.get(parsed.data.idempotencyKey);
     return job === undefined ? reply.code(404).send({ error: "ENGINE_JOB_NOT_FOUND" }) : structuredClone(job);
   });
 }
 
 async function executeDispatchedJob(
-  job: JobStatus,
+  job: DurableJobStatus,
   scan: ScanWorkflowInput,
   callbackUrl: string,
   execute: (input: ScanWorkflowInput, progress: (stage: ScanStage, message: string) => void) => Promise<unknown>,
   secret: string,
+  statusStore: JobStatusStore,
 ): Promise<void> {
   let callbackChain = Promise.resolve();
   const enqueueCallback = (payload: Record<string, unknown>): void => {
-    callbackChain = callbackChain.then(() => sendCallback(callbackUrl, secret, payload));
+    const checkpoint = structuredClone(job);
+    callbackChain = callbackChain
+      .catch(() => undefined)
+      .then(async () => {
+        await statusStore.put(checkpoint);
+        await sendCallback(callbackUrl, secret, payload);
+      });
   };
   const progress = (stage: ScanStage, message: string): void => {
     job.state = stage;
+    job.checkpointStage = stage;
     job.updatedAt = Date.now();
     enqueueCallback({ jobId: job.jobId, engineJobId: job.engineJobId, stage, message, at: job.updatedAt });
   };
@@ -148,6 +157,7 @@ async function executeDispatchedJob(
     const result = await execute(scan, progress);
     job.result = result;
     job.state = "COMPLETE";
+    job.checkpointStage = "COMPLETE";
     job.updatedAt = Date.now();
     enqueueCallback({
       jobId: job.jobId,
@@ -160,6 +170,7 @@ async function executeDispatchedJob(
   } catch (error) {
     job.error = error instanceof Error ? error.message : "Unknown engine job failure";
     job.state = "FAILED";
+    job.checkpointStage = "FAILED";
     job.updatedAt = Date.now();
     enqueueCallback({
       jobId: job.jobId,
@@ -170,7 +181,7 @@ async function executeDispatchedJob(
       error: job.error,
     });
   }
-  await callbackChain.catch(() => undefined);
+  await callbackChain.catch(async () => statusStore.put(structuredClone(job)));
 }
 
 async function sendCallback(

@@ -24,6 +24,12 @@ Convex: HYDRATRACE_ENGINE_DISPATCH_URL=https://hydratrace-engine.vercel.app
 Convex: HYDRATRACE_JOB_SHARED_SECRET=<same secret as engine>
 ```
 
+For a long-running Zerops engine, also set
+`HYDRATRACE_JOB_STATE_DIR=/var/lib/hydratrace/jobs` on a persistent volume.
+The public Vercel engine deliberately does not rely on local filesystem
+durability: Convex retries the same idempotency key and canonical graph writes
+make a replay safe.
+
 Deploy from each app directory:
 
 ```powershell

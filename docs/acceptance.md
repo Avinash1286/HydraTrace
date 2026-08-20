@@ -3,11 +3,11 @@
 | Plan claim | Evidence | Status |
 |---|---|---|
 | Exact npm versions/topology | Three lockfile fixture suites and exact counts | Passed |
-| Exact/current/historical blast radius | Incident and seeded property-graph tests | Passed |
+| Exact/current/historical blast radius | Incident fixtures plus 8 live HydraDB/reference graph-shape comparisons | Passed |
 | Safe/dev-only negative controls | Known-answer fixture assertions | Passed |
 | Idempotent durable graph | Live write twice, restart, read again | Passed |
 | Separate healthy indexer | Admin readiness and zero failed cycles | Passed |
-| Convex retries/progress | Storage upload, HMAC dispatch/callback, reclaim code, and 9 production events | Passed |
+| Convex retries/progress | Storage upload, HMAC dispatch/callback, reclaim code, 9 production events, durable checkpoint replay and lost-callback test | Passed |
 | Reachability/neighborhood reasons | Static/runtime and neighborhood tests | Passed |
 | Remediation coverage/verification | Exact/greedy tests and strong zero-path guard | Passed |
 | Grounded AI/fallback | Schema/citation/circuit/fallback tests | Passed |

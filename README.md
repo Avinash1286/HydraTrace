@@ -47,8 +47,10 @@ pnpm dev:web
 ```
 
 `pnpm gate:hydradb` starts pinned HydraDB, indexer, and MinIO containers; proves
-idempotency and exact counts; restarts the graph node; and requires one exact
-strong-consistency three-hop path. Stop without deleting data with:
+idempotency and exact counts; restarts the graph node; requires one exact
+strong-consistency three-hop path; and compares every complete path for eight
+fixed-seed graph shapes against an independent reference enumerator. Stop
+without deleting data with:
 
 ```powershell
 docker compose -f infra/local/docker-compose.yml stop
@@ -61,6 +63,7 @@ docker compose -f infra/local/docker-compose.yml stop
 | `pnpm verify` | Root, web, and Worker typechecks plus deterministic tests |
 | `pnpm scan:fixture` | Three known-answer imports and duplicate-write proof |
 | `pnpm gate:hydradb` | Live persistence/indexer/restart/strong-path gate |
+| `pnpm property:hydradb` | Live fixed-seed HydraDB/reference path comparison |
 | `pnpm benchmark -- --profile=large` | Exact 250k-node/1m-edge reference benchmark |
 | `pnpm cli -- --help` | Scan, incident, gate, JSON/table/SARIF CLI |
 | `pnpm exec convex dev --once` | Validate and push the development control plane |

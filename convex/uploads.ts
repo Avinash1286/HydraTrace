@@ -16,7 +16,7 @@ export const record = mutation({
     repositoryId: v.optional(v.id("repositories")),
   },
   handler: async (ctx, args) => {
-    if (args.byteLength < 1 || args.byteLength > 8_000_000) throw new Error("Upload exceeds the 8 MB limit");
+    if (args.byteLength < 1 || args.byteLength > 5_000_000) throw new Error("Upload exceeds the 5 MB engine limit");
     if (!/^[0-9a-f]{64}$/u.test(args.sha256)) throw new Error("Upload SHA-256 is invalid");
     return ctx.db.insert("uploads", {
       ...args,
@@ -30,4 +30,3 @@ export const get = query({
   args: { uploadId: v.id("uploads") },
   handler: (ctx, args) => ctx.db.get(args.uploadId),
 });
-

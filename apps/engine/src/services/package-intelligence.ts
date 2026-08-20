@@ -30,7 +30,11 @@ const packageParameters = z.object({
   version: z.string().trim().min(1),
 });
 const packageIdParameters = z.object({ packageId: z.string().regex(/^\d+$/u) });
-const packageQuery = z.object({ version: z.string().trim().min(1).max(128).optional() });
+const packageQuery = z.object({
+  version: z.string().trim().min(1).max(128).optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 export function registerPackageIntelligenceRoutes(
   application: FastifyInstance,
@@ -54,12 +58,19 @@ export function registerPackageIntelligenceRoutes(
 
   application.get("/v1/packages/:packageId", async (request, reply) => {
     const parameters = packageIdParameters.safeParse(request.params);
-    if (!parameters.success) return reply.code(400).send({ error: "INVALID_PACKAGE_ID" });
+    const query = packageQuery.safeParse(request.query);
+    if (!parameters.success || !query.success) return reply.code(400).send({ error: "INVALID_PACKAGE_ID" });
     await hydratePackageIntelligence(graphStore, catalog);
     const versions = versionsForPackage(catalog, parameters.data.packageId as StableId);
     return versions.length === 0
       ? reply.code(404).send({ error: "PACKAGE_METADATA_NOT_FOUND" })
-      : { packageId: parameters.data.packageId, versions };
+      : {
+          packageId: parameters.data.packageId,
+          total: versions.length,
+          offset: query.data.offset,
+          limit: query.data.limit,
+          versions: versions.slice(query.data.offset, query.data.offset + query.data.limit),
+        };
   });
 
   application.get("/v1/packages/:packageId/neighborhood", async (request, reply) => {

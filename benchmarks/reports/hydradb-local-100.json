@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-16T00:00:00.000Z",
+  "generatedAt": "2026-08-20T12:42:46.556Z",
   "dataset": {
     "seed": 42,
     "profile": "custom",
@@ -24,7 +24,13 @@
     "paths": 1
   },
   "memory": {
-    "engineRssBytes": 81317888
+    "engineRssBytes": 81317888,
+    "hydraDbNodeResidentBytes": 14365491,
+    "hydraDbIndexerResidentBytes": 8019509,
+    "minioResidentBytes": 236348006
+  },
+  "objectStorage": {
+    "minioDataBytesAfterCorrectnessAndPropertyGates": 1958358
   },
   "limitations": [
     "A 1000-resolution write exceeded HydraDB v0.1.1's fixed 29999 ms query-runtime limit.",

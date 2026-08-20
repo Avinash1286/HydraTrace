@@ -1,4 +1,4 @@
-# Implementation status — 2026-08-16
+# Implementation status — 2026-08-20
 
 ## Complete and verified
 
@@ -10,16 +10,19 @@
 - CLI, Markdown/JSON/SARIF reports, grounded copilot, deterministic fallback;
 - Convex development and production deployments with Storage uploads, signed dispatch,
   ordered callbacks, leases, watchdog reclaim, and five-attempt retry scheduling;
+- atomic engine-side checkpoints, interrupted-stage replay, and completion recovery
+  even when every callback is lost;
 - Next.js dashboard and Fastify engine production deployments on Vercel;
-- live pinned HydraDB/MinIO/indexer persistence and strong-read gate;
+- live pinned HydraDB/MinIO/indexer persistence and strong-read gate, plus eight
+  fixed-seed live HydraDB/reference complete-path comparisons;
 - exact Small/Medium/Large reference benchmarks and a separate live HydraDB control.
 
 Verification snapshot:
 
 ```text
-pnpm verify         22 files / 84 tests passed
+pnpm verify         23 files / 88 tests passed
 pnpm scan:fixture   3 snapshots, 72 nodes, 102 relationships, retry 0/0
-pnpm gate:hydradb   persistence, idempotency, indexer, restart, strong path passed
+pnpm gate:hydradb   persistence, idempotency, indexer, restart, strong path and 8 graph shapes passed
 Vercel              web + engine + /system HTTP 200; rendered workflow checked
 Convex              production Storage scan completed with 9 signed progress events
 Benchmark           250,000 nodes / 1,000,000 edges reference profile completed

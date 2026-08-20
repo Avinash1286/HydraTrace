@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { createHash } from "node:crypto";
 
 interface Options { [key: string]: string | boolean | undefined; }
 const [command, ...tokens] = process.argv.slice(2);
@@ -34,12 +35,13 @@ function usage(): void {
 async function scan(): Promise<void> {
   const lockfilePath = required("lockfile");
   const content = await readFile(lockfilePath, "utf8");
+  const lockfileSha256 = createHash("sha256").update(content, "utf8").digest("hex");
   const repositoryId = String(options.repository ?? "local/repository");
   const commitSha = String(options.commit ?? "working-tree");
   const body: Record<string, unknown> = { content, sourceRef: basename(lockfilePath), repositoryId, commitSha, observedAt: Date.now() };
   if (options.environment !== undefined) {
     const environment = String(options.environment);
-    body.deploymentManifest = JSON.stringify({ schemaVersion: 1, organizationId: String(options.organization ?? "local"), repositoryId, serviceId: String(options.service ?? basename(process.cwd())), environment, commitSha, startedAt: String(options.startedAt ?? new Date().toISOString()), endedAt: null, lockfile: basename(lockfilePath) });
+    body.deploymentManifest = JSON.stringify({ schemaVersion: 1, organizationId: String(options.organization ?? "local"), repositoryId, serviceId: String(options.service ?? basename(process.cwd())), environment, commitSha, startedAt: String(options.startedAt ?? new Date().toISOString()), endedAt: null, lockfile: basename(lockfilePath), lockfileSha256 });
   }
   const result = await request("/v1/scans", { method: "POST", body });
   output(result);

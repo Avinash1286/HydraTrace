@@ -50,6 +50,7 @@ await command("docker", ["compose", "-f", composeFile, "restart", "hydradb-node"
 await waitReady("http://127.0.0.1:9090/readyz", 60_000);
 await pnpmSmoke({ ...environment, HYDRADB_CONSISTENCY: "causal" });
 await strongPathProbe(environment);
+await pnpmPropertyGate(environment);
 await waitIndexer(successfulCycles, 10_000);
 process.stdout.write(
   "HydraDB persistence, idempotency, indexing, and three-hop path gate passed.\n",
@@ -161,6 +162,17 @@ function pnpmSmoke(env: NodeJS.ProcessEnv): Promise<void> {
         60_000,
       )
     : command("pnpm", ["smoke:hydradb"], env, 60_000);
+}
+
+function pnpmPropertyGate(env: NodeJS.ProcessEnv): Promise<void> {
+  return process.platform === "win32"
+    ? command(
+        process.env.ComSpec ?? "cmd.exe",
+        ["/d", "/s", "/c", "pnpm property:hydradb"],
+        env,
+        180_000,
+      )
+    : command("pnpm", ["property:hydradb"], env, 180_000);
 }
 
 function command(

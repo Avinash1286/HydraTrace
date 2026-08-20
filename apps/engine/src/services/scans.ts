@@ -72,6 +72,10 @@ const scanRequestSchema = z
     }
   });
 const scanParameters = z.object({ scanId: z.string().regex(/^\d+$/u) });
+const eventListQuery = z.object({
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 export type ScanStage =
   | "QUEUED"
@@ -260,10 +264,17 @@ export function registerScanWorkflowRoutes(
 
   application.get("/v1/scans/:scanId/events", async (request, reply) => {
     const parsed = scanParameters.safeParse(request.params);
-    if (!parsed.success) return reply.code(400).send({ error: "INVALID_SCAN_ID" });
+    const query = eventListQuery.safeParse(request.query);
+    if (!parsed.success || !query.success) return reply.code(400).send({ error: "INVALID_SCAN_EVENT_QUERY" });
     const stableId = parsed.data.scanId as StableId;
     const scan = scans.get(stableId);
-    if (scan !== undefined) return { scanId: stableId, events: scan.events };
+    if (scan !== undefined) return {
+      scanId: stableId,
+      total: scan.events.length,
+      offset: query.data.offset,
+      limit: query.data.limit,
+      events: scan.events.slice(query.data.offset, query.data.offset + query.data.limit),
+    };
     if (convex !== undefined) {
       const durable = await convex.query(api.scans.get, { stableId });
       if (durable !== null) {
@@ -272,7 +283,10 @@ export function registerScanWorkflowRoutes(
         });
         return {
           scanId: stableId,
-          events: events.map((event) => ({
+          total: events.length,
+          offset: query.data.offset,
+          limit: query.data.limit,
+          events: events.slice(query.data.offset, query.data.offset + query.data.limit).map((event) => ({
             eventId: stableIdFromCanonicalKey(
               `scan-event:${stableId}:${event.sequence}:${event.stage}`,
             ),

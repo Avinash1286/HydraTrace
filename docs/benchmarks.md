@@ -71,6 +71,10 @@ Command: the environment above with `pnpm benchmark -- 100 --hydradb`.
 | Strong 16-hop path through HTTP | 1,191.39 ms |
 | Returned paths | 1 |
 | Client process RSS after run | 81,317,888 bytes |
+| HydraDB node resident memory (post-gate) | 14,365,491 bytes |
+| Indexer resident memory (post-gate) | 8,019,509 bytes |
+| MinIO resident memory (post-gate) | 236,348,006 bytes |
+| MinIO persisted data after correctness/property gates | 1,958,358 bytes |
 
 Environment: Windows 11, Docker Desktop, Node.js 24.15.0, pinned HydraDB
 v0.1.1, separate indexer, and local persistent MinIO. The measurement includes

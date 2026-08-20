@@ -16,6 +16,7 @@
     "scan:fixture": "tsx apps/engine/src/commands/scan-fixture.ts",
     "smoke:osv": "tsx apps/engine/src/commands/osv-smoke.ts",
     "smoke:hydradb": "node --env-file-if-exists=.env --import tsx apps/engine/src/commands/hydradb-smoke.ts",
+    "property:hydradb": "node --env-file-if-exists=.env --import tsx apps/engine/src/commands/hydradb-property-gate.ts",
     "gate:hydradb": "tsx apps/engine/src/commands/persistence-gate.ts",
     "start:engine": "node --env-file-if-exists=.env --import tsx apps/engine/src/server.ts",
     "cli": "tsx apps/cli/src/cli.ts",
