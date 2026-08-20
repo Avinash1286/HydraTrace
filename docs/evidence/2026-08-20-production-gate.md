@@ -14,12 +14,13 @@ indexer, strong-graph, restart, and Vercel-to-Zerops checks remain pending.
 
 | Field | Value |
 |---|---|
-| Commit SHA | PENDING |
-| Worktree clean | PENDING |
-| Operator/time window | Automated/operator validation on 2026-08-20 NPT; final repository freeze pending |
+| Application commit SHA | `6c84a11b6b3a4d7bda165b53a35192f0a5268f55` |
+| Worktree clean | Yes after the release and evidence commits |
+| Operator/time window | Automated/operator validation and repository freeze on 2026-08-20 NPT |
 | Public web | <https://hydratrace.vercel.app> |
 | Zerops engine readiness URL | PENDING: `https://<engine>/ready` |
 | Vercel fallback readiness | <https://hydratrace-engine.vercel.app/ready> |
+| Vercel fallback deployment | `dpl_8FvaJASsmqFxAzNXZmmyEcfZ2z9T` |
 | Convex | `https://accomplished-skunk-643.convex.cloud` |
 | Cloudflare gateway | `https://hydratrace-ai-gateway.abinashyadav3-141.workers.dev` |
 
@@ -48,7 +49,7 @@ GitHub Actions.
 | `pnpm scan:fixture` | 3 snapshots; 72 nodes; 102 relationships; repeat 0/0 | Exact expected values | Passed |
 | `pnpm gate:hydradb` | Persistence, indexer, restart, strong path, 8 shapes pass | Final local run passed all phases | Passed |
 | `pnpm --filter @hydratrace/web build` | Production export succeeds | Next.js static production build passed | Passed |
-| `git diff --check` | No whitespace errors | Exit 0 on the candidate changes; final freeze still pending | Passed |
+| `git diff --check` | No whitespace errors | Exit 0 before the application commit and again before the evidence commit | Passed |
 | Candidate-file secret scan | No credentials/private keys | No private-key, GitHub-token, AWS-key, JWT, Cloudflare-token, or Zerops-token patterns in tracked/new candidate files | Passed |
 
 ## Zerops infrastructure
