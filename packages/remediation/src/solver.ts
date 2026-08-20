@@ -11,7 +11,11 @@ export function solveRemediation(
   candidates: readonly RemediationCandidate[],
 ): RemediationSolution {
   const universe = [...new Set(vulnerablePathIds)].sort();
-  const valid = candidates.filter((candidate) => !candidate.deprecated && !candidate.knownVulnerable && candidate.eliminatedPathIds.some((id) => universe.includes(id)));
+  const valid = candidates.filter((candidate) =>
+    candidate.verification !== "PROPOSED" &&
+    !candidate.deprecated &&
+    !candidate.knownVulnerable &&
+    candidate.eliminatedPathIds.some((id) => universe.includes(id)));
   return valid.length <= 25 ? exactSolve(universe, valid) : greedySolve(universe, valid);
 }
 

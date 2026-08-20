@@ -10,6 +10,7 @@ import {
 import type { IncidentCatalog } from "./catalog.js";
 import type {
   BlastRadiusFinding,
+  BlastRadiusPathLookup,
   BlastRadiusQuery,
   BlastRadiusResult,
   EvidencePath,
@@ -20,6 +21,7 @@ import type {
 const DEFAULT_PATH_DISPLAY_LIMIT = 20;
 const DEFAULT_PATH_COUNT_LIMIT = 10_000;
 const DEFAULT_FINDING_LIMIT = 100;
+const MAX_INTERNAL_FINDING_LIMIT = 10_000;
 
 interface InternalPath {
   nodes: NormalizedResolution[];
@@ -31,6 +33,32 @@ export function analyzeBlastRadius(
   incidentId: StableId,
   query: BlastRadiusQuery = {},
   generatedAt = Date.now(),
+): BlastRadiusResult {
+  return analyzeBlastRadiusInternal(catalog, incidentId, query, undefined, generatedAt);
+}
+
+/**
+ * Builds the same deterministic incident result as {@link analyzeBlastRadius},
+ * but uses paths that were traversed by the configured graph store. A missing
+ * lookup entry intentionally falls back to the reference enumerator so callers
+ * can mix graph-backed and in-memory snapshots during migrations.
+ */
+export function analyzeBlastRadiusWithTraversedPaths(
+  catalog: IncidentCatalog,
+  incidentId: StableId,
+  query: BlastRadiusQuery,
+  pathLookup: BlastRadiusPathLookup,
+  generatedAt = Date.now(),
+): BlastRadiusResult {
+  return analyzeBlastRadiusInternal(catalog, incidentId, query, pathLookup, generatedAt);
+}
+
+function analyzeBlastRadiusInternal(
+  catalog: IncidentCatalog,
+  incidentId: StableId,
+  query: BlastRadiusQuery,
+  pathLookup: BlastRadiusPathLookup | undefined,
+  generatedAt: number,
 ): BlastRadiusResult {
   const incident = catalog.getIncident(incidentId);
   if (incident === undefined) throw new Error(`Incident ${incidentId} was not found`);
@@ -53,12 +81,27 @@ export function analyzeBlastRadius(
         );
         if (targets.length === 0) continue;
 
-        const enumerated = enumerateSnapshotPaths(
-          entry.normalized,
-          new Set(targets.map(({ id }) => id)),
-          options.maxDepth,
-          options.pathCountLimit,
-        );
+        const targetResolutionIds = new Set(targets.map(({ id }) => id));
+        const traversed = pathLookup?.({
+          snapshotId: entry.normalized.snapshot.id,
+          affectedPackageVersionId: affectedVersion.id,
+          targetResolutionIds,
+        });
+        const enumerated = traversed === undefined
+          ? enumerateSnapshotPaths(
+              entry.normalized,
+              targetResolutionIds,
+              options.maxDepth,
+              options.pathCountLimit,
+            )
+          : materializeTraversedPaths(
+              entry.normalized,
+              targetResolutionIds,
+              traversed.paths,
+              options.maxDepth,
+              options.pathCountLimit,
+              traversed.truncated,
+            );
         const includedPaths = enumerated.paths.filter(
           (path) =>
             options.includeDevelopment ||
@@ -77,6 +120,7 @@ export function analyzeBlastRadius(
             affectedVersion.name,
             affectedVersion.version,
             includedPaths,
+            options.pathOffset,
             options.pathDisplayLimit,
             enumerated.truncated,
           ),
@@ -90,28 +134,96 @@ export function analyzeBlastRadius(
   for (const finding of findings) {
     finding.risk = riskScoreForFinding(incident, finding, affectedServiceCount);
   }
-  const totalFindings = findings.length;
-  const totalPaths = findings.reduce((total, finding) => total + finding.pathCount, 0);
-  const paginated = findings.slice(options.offset, options.offset + options.limit);
+  const selectedFindings = options.findingId === undefined
+    ? findings
+    : findings.filter(({ findingId }) => findingId === options.findingId);
+  const totalFindings = selectedFindings.length;
+  const totalPaths = selectedFindings.reduce((total, finding) => total + finding.pathCount, 0);
+  const paginated = selectedFindings.slice(options.offset, options.offset + options.limit);
   return {
     incidentId,
     generatedAt,
     query: {
       environments: options.environments,
       includeDevelopment: options.includeDevelopment,
+      pathOffset: options.pathOffset,
       pathDisplayLimit: options.pathDisplayLimit,
       pathCountLimit: options.pathCountLimit,
       maxDepth: options.maxDepth,
       ...(options.at === undefined ? {} : { at: options.at }),
     },
     totalFindings,
-    totalAffectedServices: affectedServiceCount,
-    totalAffectedDeployments: new Set(findings.map(({ deploymentId }) => deploymentId)).size,
+    totalAffectedServices: new Set(selectedFindings.map(({ serviceId }) => serviceId)).size,
+    totalAffectedDeployments: new Set(selectedFindings.map(({ deploymentId }) => deploymentId)).size,
     totalPaths,
-    pathsTruncated: findings.some(({ pathsTruncated }) => pathsTruncated),
+    pathsTruncated: selectedFindings.some(({ pathsTruncated }) => pathsTruncated),
     offset: options.offset,
     limit: options.limit,
     findings: paginated,
+  };
+}
+
+function materializeTraversedPaths(
+  normalized: NormalizedSnapshot,
+  targetIds: ReadonlySet<StableId>,
+  traversedPaths: readonly {
+    nodeIds: readonly StableId[];
+    relationshipIds: readonly StableId[];
+  }[],
+  maxDepth: number,
+  countLimit: number,
+  sourceTruncated: boolean,
+): { paths: InternalPath[]; truncated: boolean } {
+  const resolutions = new Map(
+    normalized.resolutions.map((resolution) => [resolution.id, resolution]),
+  );
+  const relationships = new Map(
+    normalized.edges.map((edge) => [edge.id, edge]),
+  );
+  const unique = new Map<string, InternalPath>();
+
+  for (const traversed of traversedPaths) {
+    if (
+      traversed.nodeIds.length !== traversed.relationshipIds.length + 1 ||
+      traversed.relationshipIds.length > maxDepth
+    ) {
+      throw new Error("Graph store returned a malformed or over-depth dependency path");
+    }
+    const firstId = traversed.nodeIds[0];
+    const lastId = traversed.nodeIds.at(-1);
+    if (firstId === undefined || lastId === undefined) {
+      throw new Error("Graph store returned an empty dependency path");
+    }
+    const nodes = traversed.nodeIds.map((id) => {
+      const node = resolutions.get(id);
+      if (node === undefined) {
+        throw new Error(`Graph path references resolution ${id} outside its snapshot`);
+      }
+      return node;
+    });
+    if (!nodes[0]?.root || !targetIds.has(lastId)) {
+      throw new Error("Graph store returned a dependency path with invalid endpoints");
+    }
+    const edges = traversed.relationshipIds.map((id, index) => {
+      const edge = relationships.get(id);
+      if (
+        edge === undefined ||
+        edge.fromResolutionId !== traversed.nodeIds[index] ||
+        edge.toResolutionId !== traversed.nodeIds[index + 1]
+      ) {
+        throw new Error(`Graph path relationship ${id} does not connect its adjacent resolutions`);
+      }
+      return edge;
+    });
+    unique.set(traversed.nodeIds.join("/"), { nodes, edges });
+  }
+
+  const ordered = [...unique.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, path]) => path);
+  return {
+    paths: ordered.slice(0, countLimit),
+    truncated: sourceTruncated || ordered.length > countLimit,
   };
 }
 
@@ -119,11 +231,13 @@ interface NormalizedQuery {
   at?: number;
   environments: string[];
   includeDevelopment: boolean;
+  pathOffset: number;
   pathDisplayLimit: number;
   pathCountLimit: number;
   maxDepth: number;
   offset: number;
   limit: number;
+  findingId?: StableId;
 }
 
 function normalizeQuery(
@@ -146,20 +260,34 @@ function normalizeQuery(
     10_000,
     "pathCountLimit",
   );
+  const pathOffset = boundedInteger(query.pathOffset ?? 0, 0, 9_999, "pathOffset");
+  if (pathOffset + pathDisplayLimit > pathCountLimit) {
+    throw new Error("pathOffset plus pathDisplayLimit must not exceed pathCountLimit");
+  }
   const maxDepth = boundedInteger(query.maxDepth ?? 16, 0, 16, "maxDepth");
   const offset = boundedInteger(query.offset ?? 0, 0, 100_000, "offset");
-  const limit = boundedInteger(query.limit ?? DEFAULT_FINDING_LIMIT, 1, 100, "limit");
+  const limit = boundedInteger(
+    query.limit ?? DEFAULT_FINDING_LIMIT,
+    1,
+    MAX_INTERNAL_FINDING_LIMIT,
+    "limit",
+  );
+  if (query.findingId !== undefined && !/^\d+$/u.test(query.findingId)) {
+    throw new Error("findingId must be a decimal stable ID");
+  }
   const environments = [
     ...new Set((query.environments ?? incident.environments).map((value) => value.toLowerCase())),
   ].sort();
   return {
     environments,
     includeDevelopment: query.includeDevelopment ?? false,
+    pathOffset,
     pathDisplayLimit,
     pathCountLimit,
     maxDepth,
     offset,
     limit,
+    ...(query.findingId === undefined ? {} : { findingId: query.findingId }),
     ...(at === undefined ? {} : { at }),
   };
 }
@@ -267,6 +395,7 @@ function buildFinding(
   packageName: string,
   version: string,
   paths: readonly InternalPath[],
+  pathOffset: number,
   pathDisplayLimit: number,
   pathsTruncated: boolean,
 ): BlastRadiusFinding {
@@ -276,6 +405,7 @@ function buildFinding(
   const evidencePaths = paths.map((path) =>
     publicEvidencePath(normalized.snapshot.id, deployment.deploymentId, path),
   );
+  const displayedPaths = evidencePaths.slice(pathOffset, pathOffset + pathDisplayLimit);
   const firstExposedAt = Math.max(
     normalized.snapshot.createdAt,
     deployment.startedAt,
@@ -289,7 +419,7 @@ function buildFinding(
     evidenceRef("snapshot", normalized.snapshot.id),
     evidenceRef("deployment", deployment.deploymentId),
     evidenceRef("package-version", packageVersionId),
-    ...evidencePaths.map(({ pathId }) => evidenceRef("path", pathId)),
+    ...displayedPaths.map(({ pathId }) => evidenceRef("path", pathId)),
   ];
   const reachabilityEvidence = catalog.reachabilityFor(
     normalized.snapshot.id,
@@ -319,8 +449,9 @@ function buildFinding(
     direct: evidencePaths.some(({ direct }) => direct),
     developmentOnly: evidencePaths.every(({ developmentOnly }) => developmentOnly),
     pathCount: evidencePaths.length,
-    displayedPaths: evidencePaths.slice(0, pathDisplayLimit),
-    pathsTruncated: pathsTruncated || evidencePaths.length > pathDisplayLimit,
+    pathCountTruncated: pathsTruncated,
+    displayedPaths,
+    pathsTruncated: pathsTruncated || pathOffset > 0 || evidencePaths.length > pathOffset + pathDisplayLimit,
     reachability,
     reachabilityEvidence,
     evidenceRefs: [

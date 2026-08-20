@@ -10,12 +10,16 @@ const MAX_ARCHIVE_BYTES = 4_000_000;
 const MAX_ARCHIVE_FILES = 10_000;
 const MAX_EXPANDED_BYTES = 50_000_000;
 const MAX_SELECTED_FILE_BYTES = 5_000_000;
+const MAX_SOURCE_FILES = 2_000;
+const MAX_SOURCE_FILE_BYTES = 1_000_000;
+const MAX_SOURCE_BYTES = 5_000_000;
 
 interface ArchiveSelection {
   lockfilePath: string;
   content: string;
   deploymentManifest?: string;
   rootPackage?: { name: string; version: string };
+  staticAnalysis?: ScanWorkflowInput["staticAnalysis"];
 }
 
 /**
@@ -65,7 +69,11 @@ export async function acquireScanInput(
     archive = decodeArchive(request.archiveBase64!);
   }
 
-  const selection = await readArchive(archive, request.lockfilePath);
+  const selection = await readArchive(
+    archive,
+    request.lockfilePath,
+    request.staticAnalysis === undefined,
+  );
   const digest = sha256Hex(selection.content);
   repositoryId ??= `upload/${sha256Hex(archive.toString("base64")).slice(0, 16)}`;
   commitSha ??= `upload-${digest.slice(0, 16)}`;
@@ -81,6 +89,9 @@ export async function acquireScanInput(
     ...((request.deploymentManifest ?? selection.deploymentManifest) === undefined
       ? {}
       : { deploymentManifest: request.deploymentManifest ?? selection.deploymentManifest! }),
+    ...(selection.staticAnalysis === undefined
+      ? {}
+      : { staticAnalysis: selection.staticAnalysis }),
   });
 }
 
@@ -88,23 +99,41 @@ function finishInput(
   request: ScanWorkflowRequest,
   input: ScanWorkflowInput,
 ): ScanWorkflowInput {
-  if (input.deploymentManifest !== undefined || request.environment === undefined) {
-    return input;
+  let completed = input;
+  if (input.deploymentManifest === undefined && request.environment !== undefined) {
+    const startedAt = request.deploymentStartedAt ?? input.observedAt;
+    const endedAt = request.deploymentEndedAt ?? null;
+    const deploymentManifest = JSON.stringify({
+      schemaVersion: 1,
+      organizationId: request.organizationId ?? "local",
+      repositoryId: input.repositoryId,
+      serviceId: request.serviceId ?? input.repositoryId.split("/").at(-1) ?? "service",
+      environment: request.environment,
+      commitSha: input.commitSha,
+      startedAt: new Date(startedAt).toISOString(),
+      endedAt: endedAt === null ? null : new Date(endedAt).toISOString(),
+      lockfile: input.sourceRef,
+    });
+    completed = { ...completed, deploymentManifest };
   }
-  const startedAt = request.deploymentStartedAt ?? input.observedAt;
-  const endedAt = request.deploymentEndedAt ?? null;
-  const deploymentManifest = JSON.stringify({
-    schemaVersion: 1,
-    organizationId: request.organizationId ?? "local",
-    repositoryId: input.repositoryId,
-    serviceId: request.serviceId ?? input.repositoryId.split("/").at(-1) ?? "service",
-    environment: request.environment,
-    commitSha: input.commitSha,
-    startedAt: new Date(startedAt).toISOString(),
-    endedAt: endedAt === null ? null : new Date(endedAt).toISOString(),
-    lockfile: input.sourceRef,
-  });
-  return { ...input, deploymentManifest };
+  if (request.staticAnalysis !== undefined) {
+    completed = {
+      ...completed,
+      staticAnalysis: {
+        origin: "precomputed",
+        entrypoints: request.staticAnalysis.entrypoints,
+        files: request.staticAnalysis.files,
+        ...(request.staticAnalysis.observedAt === undefined
+          ? {}
+          : { observedAt: request.staticAnalysis.observedAt }),
+      },
+    };
+  }
+  if (request.runtimeTrace !== undefined) {
+    const { snapshotId: _snapshotId, ...runtimeTrace } = request.runtimeTrace;
+    completed = { ...completed, runtimeTrace };
+  }
+  return completed;
 }
 
 function inferLockfileName(content: string): string {
@@ -212,7 +241,11 @@ async function downloadLimited(url: string, fetchImplementation: typeof fetch): 
   return decodeArchive(Buffer.concat(chunks).toString("base64"));
 }
 
-async function readArchive(archive: Buffer, requestedPath?: string): Promise<ArchiveSelection> {
+async function readArchive(
+  archive: Buffer,
+  requestedPath?: string,
+  collectSources = true,
+): Promise<ArchiveSelection> {
   const zip = await openZip(archive);
   try {
     const entries = await listEntries(zip);
@@ -226,12 +259,17 @@ async function readArchive(archive: Buffer, requestedPath?: string): Promise<Arc
     const packageJson = entries.find(({ fileName }) => fileName === `${directory}package.json`);
     const content = await readEntry(zip, lockfile);
     const deploymentManifest = manifest === undefined ? undefined : await readEntry(zip, manifest);
-    const rootPackage = packageJson === undefined ? undefined : parseRootPackage(await readEntry(zip, packageJson));
+    const packageJsonContent = packageJson === undefined ? undefined : await readEntry(zip, packageJson);
+    const rootPackage = packageJsonContent === undefined ? undefined : parseRootPackage(packageJsonContent);
+    const staticAnalysis = collectSources
+      ? await readSourceAnalysis(zip, entries, directory, packageJsonContent)
+      : undefined;
     return {
       lockfilePath: stripArchiveRoot(lockfile.fileName),
       content,
       ...(deploymentManifest === undefined ? {} : { deploymentManifest }),
       ...(rootPackage === undefined ? {} : { rootPackage }),
+      ...(staticAnalysis === undefined ? {} : { staticAnalysis }),
     };
   } finally {
     zip.close();
@@ -297,30 +335,164 @@ function selectEntry(entries: readonly Entry[], requestedPath?: string): Entry |
   })[0];
 }
 
-function readEntry(zip: ZipFile, entry: Entry): Promise<string> {
-  if (entry.uncompressedSize > MAX_SELECTED_FILE_BYTES) {
-    throw new Error(`${entry.fileName} exceeds the ${MAX_SELECTED_FILE_BYTES}-byte file limit`);
+function readEntry(
+  zip: ZipFile,
+  entry: Entry,
+  maximumBytes = MAX_SELECTED_FILE_BYTES,
+): Promise<string> {
+  if (entry.uncompressedSize > maximumBytes) {
+    throw new Error(`${entry.fileName} exceeds the ${maximumBytes}-byte file limit`);
   }
   return new Promise((resolve, reject) => {
     zip.openReadStream(entry, (error, stream) => {
       if (error !== null) { reject(error); return; }
       if (stream === undefined) { reject(new Error(`Unable to read ${entry.fileName}`)); return; }
-      readUtf8(stream, entry.uncompressedSize).then(resolve, reject);
+      readUtf8(stream, entry.uncompressedSize, maximumBytes, entry.fileName).then(resolve, reject);
     });
   });
 }
 
-async function readUtf8(stream: Readable, declaredSize: number): Promise<string> {
+async function readUtf8(
+  stream: Readable,
+  declaredSize: number,
+  maximumBytes: number,
+  sourceName: string,
+): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of stream) {
     const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     size += value.length;
-    if (size > MAX_SELECTED_FILE_BYTES) throw new Error("Selected ZIP entry exceeds its size limit");
+    if (size > maximumBytes) throw new Error("Selected ZIP entry exceeds its size limit");
     chunks.push(value);
   }
   if (size !== declaredSize) throw new Error("Selected ZIP entry size did not match its central-directory record");
-  return Buffer.concat(chunks).toString("utf8");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    throw new Error(`${sourceName} is not valid UTF-8 text`);
+  }
+}
+
+async function readSourceAnalysis(
+  zip: ZipFile,
+  entries: readonly Entry[],
+  directory: string,
+  packageJsonContent: string | undefined,
+): Promise<ScanWorkflowInput["staticAnalysis"] | undefined> {
+  const sourceEntries = entries
+    .filter(({ fileName }) => fileName.startsWith(directory))
+    .map((entry) => ({ entry, path: entry.fileName.slice(directory.length) }))
+    .filter(({ path }) => isRelevantSourcePath(path))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  if (sourceEntries.length === 0) return undefined;
+  if (sourceEntries.length > MAX_SOURCE_FILES) {
+    throw new Error(`Source scan contains more than ${MAX_SOURCE_FILES} relevant JavaScript/TypeScript files`);
+  }
+  const expandedSourceBytes = sourceEntries.reduce(
+    (total, { entry }) => total + entry.uncompressedSize,
+    0,
+  );
+  if (expandedSourceBytes > MAX_SOURCE_BYTES) {
+    throw new Error(`Source scan expands beyond the ${MAX_SOURCE_BYTES}-byte source limit`);
+  }
+  const files = [];
+  for (const { entry, path } of sourceEntries) {
+    files.push({ path, source: await readEntry(zip, entry, MAX_SOURCE_FILE_BYTES) });
+  }
+  const entrypoints = discoverEntrypoints(packageJsonContent, files.map(({ path }) => path));
+  if (entrypoints.length === 0) return undefined;
+  if (entrypoints.length > 100) {
+    throw new Error("Source scan discovered more than 100 application entrypoints");
+  }
+  return { origin: "archive", entrypoints, files };
+}
+
+const EXCLUDED_SOURCE_DIRECTORIES = new Set([
+  ".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules", "out", "vendor",
+]);
+
+function isRelevantSourcePath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  const parts = normalized.split("/");
+  if (parts.some((part) => EXCLUDED_SOURCE_DIRECTORIES.has(part.toLowerCase()))) return false;
+  if (/\.(?:d\.ts|map)$/iu.test(normalized) || /\.min\.[cm]?js$/iu.test(normalized)) return false;
+  return /\.(?:[cm]?[jt]s|[jt]sx)$/iu.test(normalized);
+}
+
+function discoverEntrypoints(
+  packageJsonContent: string | undefined,
+  sourcePaths: readonly string[],
+): string[] {
+  const known = new Set(sourcePaths.map(normalizeSourcePath));
+  const hints = new Set<string>();
+  const addHint = (value: unknown): void => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (trimmed !== "" && !trimmed.includes("*") && !trimmed.startsWith("-")) hints.add(trimmed);
+  };
+  if (packageJsonContent !== undefined) {
+    try {
+      const manifest = JSON.parse(packageJsonContent) as {
+        main?: unknown; module?: unknown; bin?: unknown; scripts?: unknown;
+      };
+      addHint(manifest.main);
+      addHint(manifest.module);
+      if (typeof manifest.bin === "string") addHint(manifest.bin);
+      else if (manifest.bin !== null && typeof manifest.bin === "object") {
+        for (const value of Object.values(manifest.bin)) addHint(value);
+      }
+      if (manifest.scripts !== null && typeof manifest.scripts === "object") {
+        for (const script of Object.values(manifest.scripts)) {
+          if (typeof script !== "string") continue;
+          for (const match of script.matchAll(/(?:^|[\s"'=])((?:\.?\.?\/)?[A-Za-z0-9_./@-]+\.(?:[cm]?[jt]s|[jt]sx))(?=$|[\s"'])/giu)) {
+            addHint(match[1]);
+          }
+        }
+      }
+    } catch {
+      // Invalid package.json content is already handled as optional root
+      // metadata. It must not cause script execution or heuristic evaluation.
+    }
+  }
+  for (const conventional of [
+    "src/server", "src/main", "src/index", "src/app", "server", "main", "index", "app", "worker", "src/worker",
+  ]) addHint(conventional);
+  for (const path of known) {
+    if (/(^|\/)(?:src\/)?app\/(?:.*\/)?(?:page|route|layout|template|loading|error|not-found)\.(?:[cm]?[jt]s|[jt]sx)$/iu.test(path) ||
+        /(^|\/)(?:src\/)?pages\/.*\.(?:[cm]?[jt]s|[jt]sx)$/iu.test(path) ||
+        /(^|\/)(?:middleware|worker|server)\.(?:[cm]?[jt]s|[jt]sx)$/iu.test(path)) {
+      hints.add(path);
+    }
+  }
+  const resolved = [...hints]
+    .map((hint) => resolveEntrypointHint(hint, known))
+    .filter((value): value is string => value !== undefined);
+  if (resolved.length === 0 && known.size === 1) resolved.push([...known][0]!);
+  return [...new Set(resolved)].sort();
+}
+
+function resolveEntrypointHint(hint: string, known: ReadonlySet<string>): string | undefined {
+  const path = normalizeSourcePath(hint);
+  const extensionless = path.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/iu, "");
+  for (const candidate of [
+    path,
+    `${extensionless}.ts`, `${extensionless}.tsx`, `${extensionless}.js`, `${extensionless}.jsx`,
+    `${extensionless}.mts`, `${extensionless}.cts`, `${extensionless}.mjs`, `${extensionless}.cjs`,
+    `${extensionless}/index.ts`, `${extensionless}/index.tsx`, `${extensionless}/index.js`,
+  ]) {
+    if (known.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function normalizeSourcePath(value: string): string {
+  const output: string[] = [];
+  for (const token of value.replaceAll("\\", "/").replace(/^\.\//u, "").split("/")) {
+    if (token === "" || token === ".") continue;
+    if (token === "..") output.pop(); else output.push(token);
+  }
+  return output.join("/");
 }
 
 function parseRootPackage(content: string): { name: string; version: string } | undefined {

@@ -1,8 +1,11 @@
+import { internal } from "./_generated/api.js";
 import { internalMutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
+const RETRY_DELAYS_MS = [0, 10_000, 30_000, 120_000, 300_000] as const;
+
 const stages = new Set([
-  "ACKNOWLEDGED", "ACQUIRING", "PARSING", "ENRICHING", "WRITING_GRAPH",
+  "ACKNOWLEDGED", "ACQUIRING", "PARSING", "WRITING_GRAPH", "ENRICHING",
   "INDEXING", "WAITING_FOR_INDEX", "ANALYZING", "COMPLETE", "FAILED", "CANCELED",
 ]);
 
@@ -25,24 +28,37 @@ export const progress = internalMutation({
     if (replay !== null) return false;
     const job = await ctx.db.get(args.jobId);
     if (job === null) throw new Error("Unknown job ID");
+    if (["COMPLETE", "FAILED", "CANCELED", "CANCELLED"].includes(job.status)) return false;
+    if (job.engineJobId !== undefined && job.engineJobId !== args.engineJobId) {
+      throw new Error("Engine job ID does not match the active attempt");
+    }
     const now = Date.now();
     await ctx.db.insert("callbackRequests", {
       requestId: args.requestId,
       receivedAt: now,
       expiresAt: now + 10 * 60 * 1_000,
     });
-    const terminal = args.stage === "COMPLETE" || args.stage === "FAILED" || args.stage === "CANCELED";
+    const retryFailure = args.stage === "FAILED" && job.attempt < RETRY_DELAYS_MS.length;
+    const persistedStage = retryFailure ? "RETRY_WAIT" : args.stage;
+    const retryDelay = retryFailure ? RETRY_DELAYS_MS[job.attempt]! : 0;
+    const terminal = persistedStage === "COMPLETE" || persistedStage === "FAILED" || persistedStage === "CANCELED";
     await ctx.db.patch(args.jobId, {
-      status: args.stage,
+      status: persistedStage,
       engineJobId: args.engineJobId,
       heartbeatAt: args.at,
+      ...(retryFailure ? {
+        availableAt: now + retryDelay,
+        nextRetryAt: now + retryDelay,
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+      } : {}),
       ...(terminal ? { completedAt: args.at } : {}),
       ...(args.error === undefined ? {} : { lastError: args.error }),
     });
     await ctx.db.patch(job.scanId, {
-      stage: args.stage,
-      currentStage: args.stage,
-      progress: stageProgress(args.stage),
+      stage: persistedStage,
+      currentStage: persistedStage,
+      progress: stageProgress(persistedStage),
       lastHeartbeatAt: args.at,
       updatedAt: args.at,
       ...(args.result === undefined ? {} : { result: args.result }),
@@ -54,9 +70,9 @@ export const progress = internalMutation({
     await ctx.db.insert("scanEvents", {
       scanId: job.scanId,
       sequence: scanEvents.length,
-      stage: args.stage,
+      stage: persistedStage,
       at: args.at,
-      message: args.message,
+      message: retryFailure ? `${args.message}; retry scheduled` : args.message,
     });
     const jobEvents = await ctx.db.query("jobEvents")
       .withIndex("by_job_sequence", (q) => q.eq("jobId", args.jobId))
@@ -64,8 +80,8 @@ export const progress = internalMutation({
     await ctx.db.insert("jobEvents", {
       jobId: args.jobId,
       sequence: jobEvents.length,
-      state: args.stage,
-      message: args.message,
+      state: persistedStage,
+      message: retryFailure ? `${args.message}; retry scheduled` : args.message,
       at: args.at,
       traceId: job.idempotencyKey ?? String(args.jobId),
     });
@@ -75,9 +91,17 @@ export const progress = internalMutation({
       targetType: "job",
       targetId: String(args.jobId),
       traceId: job.idempotencyKey ?? String(args.jobId),
-      metadata: { stage: args.stage, engineJobId: args.engineJobId },
+      metadata: { stage: persistedStage, engineJobId: args.engineJobId },
       at: args.at,
     });
+    if (retryFailure) {
+      const scheduledFunctionId = await ctx.scheduler.runAfter(
+        retryDelay,
+        internal.scheduler.dispatchJob,
+        { jobId: args.jobId },
+      );
+      await ctx.db.patch(args.jobId, { scheduledFunctionId });
+    }
     return true;
   },
 });
@@ -85,7 +109,7 @@ export const progress = internalMutation({
 function stageProgress(stage: string): number {
   const order = [
     "QUEUED", "DISPATCHING", "ACKNOWLEDGED", "ACQUIRING", "PARSING",
-    "ENRICHING", "WRITING_GRAPH", "INDEXING", "WAITING_FOR_INDEX", "ANALYZING", "COMPLETE",
+    "WRITING_GRAPH", "ENRICHING", "INDEXING", "WAITING_FOR_INDEX", "ANALYZING", "COMPLETE",
   ];
   const index = order.indexOf(stage);
   return stage === "FAILED" || stage === "CANCELED" ? 100 : Math.round(Math.max(0, index) / (order.length - 1) * 100);
@@ -102,3 +126,19 @@ export const deleteExpiredReplayKeys = internalMutation({
   },
 });
 
+export const claimRequest = internalMutation({
+  args: { requestId: v.string() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db.query("callbackRequests")
+      .withIndex("by_request_id", (q) => q.eq("requestId", args.requestId))
+      .unique();
+    if (existing !== null) return false;
+    const now = Date.now();
+    await ctx.db.insert("callbackRequests", {
+      requestId: args.requestId,
+      receivedAt: now,
+      expiresAt: now + 10 * 60 * 1_000,
+    });
+    return true;
+  },
+});

@@ -52,7 +52,7 @@ describe("Cloudflare AI gateway", () => {
     const run = vi.fn().mockResolvedValue({
       response: JSON.stringify({
         answer: "The exact dependency path reaches the affected version.",
-        severity: "high",
+        severity: "HIGH",
         evidenceRefs: ["evidence:one", "invented:reference"],
         unknowns: [],
         recommendedActions: ["Apply the verified lockfile remediation."],
@@ -66,6 +66,7 @@ describe("Cloudflare AI gateway", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       provider: "cloudflare-workers-ai",
+      severity: "high",
       evidenceRefs: ["evidence:one"],
     });
     expect(run).toHaveBeenCalledOnce();

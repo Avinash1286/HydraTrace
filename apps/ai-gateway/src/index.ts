@@ -13,9 +13,13 @@ const requestSchema = z.object({
   prompt: z.string().min(1).max(100_000),
   evidenceRefs: z.array(z.string()).max(10_000),
 }).strict();
+const severitySchema = z.preprocess(
+  (value) => typeof value === "string" ? value.trim().toLowerCase() : value,
+  z.enum(["critical", "high", "medium", "low", "unknown"]),
+);
 const responseSchema = z.object({
   answer: z.string(),
-  severity: z.enum(["critical", "high", "medium", "low", "unknown"]),
+  severity: severitySchema,
   evidenceRefs: z.array(z.string()),
   unknowns: z.array(z.string()),
   recommendedActions: z.array(z.string()),
@@ -35,7 +39,7 @@ export default {
     const allowedRefs = new Set(parsed.data.evidenceRefs);
     const messages = [{ role: "system", content: "Return strict JSON only. Use only supplied deterministic evidence and cite only allowed references." }, { role: "user", content: parsed.data.prompt }];
     const attempts: Array<() => Promise<string>> = [
-      async () => textFromCloudflare(await env.AI.run(env.CLOUDFLARE_AI_MODEL as Parameters<Ai["run"]>[0], { messages, temperature: 0, max_tokens: 1_500 } as never)),
+      async () => textFromCloudflare(await env.AI.run(env.CLOUDFLARE_AI_MODEL as Parameters<Ai["run"]>[0], { messages, temperature: 0, max_tokens: 800 } as never)),
       async () => {
         if (!env.NVIDIA_API_KEY) throw new Error("NVIDIA fallback is not configured");
         const response = await fetch(`${env.NVIDIA_NIM_BASE_URL}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${env.NVIDIA_API_KEY}`, "content-type": "application/json" }, body: JSON.stringify({ model: env.NVIDIA_NIM_MODEL, messages, temperature: 0, max_tokens: 1_500 }) });

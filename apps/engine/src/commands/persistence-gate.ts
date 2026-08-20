@@ -43,15 +43,19 @@ await command("docker", [
   composeFile,
   "up",
   "-d",
+  "--force-recreate",
   "hydradb-indexer",
 ]);
-const successfulCycles = await waitIndexer(3, 60_000);
+// Recreate the indexer so its process counters start at zero. A single healthy
+// cycle then proves this run, instead of accidentally accepting an old metric
+// or waiting for three full rebuilds on a slow Docker Desktop host.
+const successfulCycles = await waitIndexer(1, 120_000);
 await command("docker", ["compose", "-f", composeFile, "restart", "hydradb-node"]);
 await waitReady("http://127.0.0.1:9090/readyz", 60_000);
 await pnpmSmoke({ ...environment, HYDRADB_CONSISTENCY: "causal" });
 await strongPathProbe(environment);
 await pnpmPropertyGate(environment);
-await waitIndexer(successfulCycles, 10_000);
+await waitIndexer(successfulCycles + 1, 120_000);
 process.stdout.write(
   "HydraDB persistence, idempotency, indexing, and three-hop path gate passed.\n",
 );

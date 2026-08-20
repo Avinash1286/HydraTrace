@@ -1,5 +1,5 @@
 import { internal } from "./_generated/api.js";
-import { internalAction } from "./_generated/server.js";
+import { env, internalAction } from "./_generated/server.js";
 import { v } from "convex/values";
 
 export const dispatchJob = internalAction({
@@ -7,18 +7,19 @@ export const dispatchJob = internalAction({
   handler: async (ctx, args) => {
     const snapshot = await ctx.runQuery(internal.jobs.getForDispatch, { jobId: args.jobId });
     if (snapshot === null || snapshot.scan === null) return;
+    const requestId = `dispatch:${String(args.jobId)}:${crypto.randomUUID()}`;
+    const attempt = await ctx.runMutation(internal.jobs.startAttempt, { jobId: args.jobId, requestId });
+    if (attempt === null) return;
     const secret = process.env.HYDRATRACE_JOB_SHARED_SECRET;
     const engineUrl = process.env.HYDRATRACE_ENGINE_DISPATCH_URL?.replace(/\/$/u, "");
     if (secret === undefined || secret.length < 32 || engineUrl === undefined) {
       await ctx.runMutation(internal.jobs.failAttempt, {
         jobId: args.jobId,
+        attemptId: attempt.attemptId,
         error: "Convex dispatch environment is not configured",
       });
       return;
     }
-    const requestId = `dispatch:${String(args.jobId)}:${crypto.randomUUID()}`;
-    const attempt = await ctx.runMutation(internal.jobs.startAttempt, { jobId: args.jobId, requestId });
-    if (attempt === null) return;
 
     try {
       if (snapshot.job.attempt > 0 && snapshot.job.idempotencyKey !== undefined) {
@@ -43,22 +44,43 @@ export const dispatchJob = internalAction({
         }
       }
 
-      let content = typeof snapshot.job.dispatchPayload?.content === "string"
-        ? snapshot.job.dispatchPayload.content
-        : undefined;
-      if (content === undefined && snapshot.upload !== null) {
+      let scan = snapshot.job.dispatchPayload?.scan as Record<string, unknown> | undefined;
+      if (scan === undefined && snapshot.upload !== null) {
+        if (snapshot.upload.expiresAt < Date.now()) throw new Error("Scheduled scan upload has expired");
         const uploadUrl = await ctx.storage.getUrl(snapshot.upload.storageId);
         if (uploadUrl === null) throw new Error("Scheduled scan upload has expired");
         const upload = await fetch(uploadUrl, { signal: AbortSignal.timeout(20_000) });
         if (!upload.ok) throw new Error(`Scheduled scan upload returned HTTP ${upload.status}`);
-        content = await upload.text();
+        const storedBuffer = await upload.arrayBuffer();
+        const storedBytes = new Uint8Array(storedBuffer);
+        if (storedBytes.byteLength !== snapshot.upload.byteLength) {
+          throw new Error("Scheduled scan envelope byte length does not match its durable record");
+        }
+        const storedDigest = await sha256Hex(storedBuffer);
+        if (storedDigest !== snapshot.upload.sha256) {
+          throw new Error("Scheduled scan envelope SHA-256 does not match its durable record");
+        }
+        let storedPayload: string;
+        try { storedPayload = new TextDecoder("utf-8", { fatal: true }).decode(storedBytes); }
+        catch { throw new Error("Scheduled scan envelope is not valid UTF-8"); }
+        if (snapshot.job.dispatchPayload?.encoding === "scan-input-json-v1") {
+          const decoded = JSON.parse(storedPayload) as unknown;
+          if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
+            throw new Error("Scheduled scan envelope is not a JSON object");
+          }
+          scan = decoded as Record<string, unknown>;
+        } else {
+          // Backward-compatible recovery for jobs queued by the previous
+          // lockfile-only scheduler shape during a deployment rollout.
+          scan = { ...snapshot.job.dispatchPayload, content: storedPayload };
+        }
       }
-      if (content === undefined) throw new Error("Scheduled scan has no lockfile content");
+      if (scan === undefined) throw new Error("Scheduled scan has no durable input envelope");
       const body = JSON.stringify({
         jobId: String(args.jobId),
         idempotencyKey: snapshot.job.idempotencyKey,
-        callbackUrl: snapshot.job.callbackUrl,
-        scan: { ...snapshot.job.dispatchPayload, content },
+        callbackUrl: snapshot.job.callbackUrl ?? `${env.CONVEX_SITE_URL.replace(/\/$/u, "")}/callbacks/progress`,
+        scan,
       });
       const response = await signedFetch(`${engineUrl}/v1/internal/jobs/dispatch`, "POST", secret, requestId, body);
       const value = await response.json() as { engineJobId?: unknown; message?: unknown };
@@ -137,3 +159,7 @@ async function sign(secret: string, timestamp: string, requestId: string, body: 
   return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function sha256Hex(value: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}

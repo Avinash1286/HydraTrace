@@ -17,6 +17,8 @@ interface PendingEvent {
   evidenceRefs: readonly string[];
 }
 
+const TIMELINE_FINDING_LIMIT = 10_000;
+
 export function buildExposureTimeline(
   catalog: IncidentCatalog,
   incidentId: StableId,
@@ -27,7 +29,7 @@ export function buildExposureTimeline(
     // Timeline defaults to the same production truth as blast radius. A
     // development-only path must not keep the production exposure counter open.
     includeDevelopment: false,
-    limit: 100,
+    limit: TIMELINE_FINDING_LIMIT,
   });
   const pending: PendingEvent[] = [];
 
@@ -174,7 +176,8 @@ export function buildExposureTimeline(
     }
   }
 
-  const finalRemovalAt = full.findings.length > 0 && full.findings.every(({ lastExposedAt }) => lastExposedAt !== null)
+  const sourceFindingsTruncated = full.findings.length < full.totalFindings;
+  const finalRemovalAt = !sourceFindingsTruncated && full.findings.length > 0 && full.findings.every(({ lastExposedAt }) => lastExposedAt !== null)
     ? Math.max(...full.findings.map(({ lastExposedAt }) => lastExposedAt!))
     : undefined;
   if (finalRemovalAt !== undefined) {
@@ -207,11 +210,22 @@ export function buildExposureTimeline(
     const eventId = stableIdFromCanonicalKey(
       `timeline:${incidentId}:${event.type}:${event.at}:${event.serviceId ?? ""}:${event.deploymentId ?? ""}`,
     );
-    const exposureCountAfter = analyzeBlastRadius(catalog, incidentId, {
-      at: event.at,
-      includeDevelopment: false,
-      limit: 100,
-    }).totalFindings;
+    const exposureCountAfter = full.findings.filter((finding) => {
+      const entry = entriesBySnapshot.get(finding.snapshotId);
+      const deployment = entry?.deployments.find(
+        ({ deploymentId }) => deploymentId === finding.deploymentId,
+      );
+      if (entry === undefined || deployment === undefined) return false;
+      return (
+        event.at >= entry.normalized.snapshot.createdAt &&
+        (entry.normalized.snapshot.validUntil === undefined || event.at < entry.normalized.snapshot.validUntil) &&
+        event.at >= deployment.startedAt &&
+        (deployment.endedAt === null || event.at < deployment.endedAt) &&
+        (incident.startsAt === undefined || event.at >= incident.startsAt) &&
+        (incident.endsAt === undefined || event.at <= incident.endsAt) &&
+        (incident.advisoryWithdrawnAt === undefined || event.at < incident.advisoryWithdrawnAt)
+      );
+    }).length;
     return {
       eventId,
       type: event.type,
@@ -233,6 +247,9 @@ export function buildExposureTimeline(
     incidentId,
     startsAt: incident.startsAt ?? null,
     endsAt: incident.endsAt ?? null,
+    sourceFindingCount: full.totalFindings,
+    consideredFindingCount: full.findings.length,
+    sourceFindingsTruncated,
     events,
   };
 }

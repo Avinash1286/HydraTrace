@@ -2,7 +2,8 @@
 
 ```mermaid
 flowchart LR
-  Web["Next.js incident workspace\nVercel"] --> Engine["Fastify deterministic engine\nVercel or private Zerops"]
+  Web["Next.js incident workspace\nVercel"] --> Engine["Fastify deterministic engine\npublic Zerops service"]
+  Web -. fallback/demo .-> Fallback["Vercel engine\nin-memory reference graph"]
   CLI["HydraTrace CLI / CI"] --> Engine
   Engine --> Convex["Convex control plane\nscans, events, leases, AI cache"]
   Engine --> Hydra["HydraDB graph node\nBolt + HTTP"]
@@ -43,3 +44,8 @@ the full signed 63-bit ID range.
 Convex is the durable control plane, not the graph truth source. It stores scan
 state/events, jobs/leases, incident records, and evidence-keyed AI results. The
 engine can reconstruct scan status across Vercel function instances from Convex.
+
+The production web-on-Vercel design and absence of GitHub Actions are approved
+variances from `plan.md`. The Vercel engine is retained only as a stateless
+fallback; it does not make a production persistence claim. Engine liveness is
+`/health`, while `/ready` verifies HydraDB and the configured separate indexer.

@@ -4,6 +4,7 @@ zerops:
       base: docker@latest
       prepareCommands:
         - docker image pull ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+        - docker image pull quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
       envVariables:
         CLOUD_PROVIDER: aws
         AWS_ENDPOINT: ${hydratracegraph_apiUrl}
@@ -25,29 +26,39 @@ zerops:
         GRAPH_DATA_CACHE_DIR: /tmp/graph/cache
         GRAPH_AUTH_TOKEN: ${graphAuthToken}
         RUST_MIN_STACK: "33554432"
-      start: |
-        install -d -m 700 /home/zerops/hydradb
-        umask 077
-        printf '%s' "$GRAPH_AUTH_TOKEN" > /home/zerops/hydradb/auth-token
-        docker run --rm --network=host \
-          -v /home/zerops/hydradb/auth-token:/tmp/graph/auth-token:ro \
-          -e CLOUD_PROVIDER -e AWS_ENDPOINT -e AWS_BUCKET_NAME \
-          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
-          -e AWS_ALLOW_HTTP -e AWS_VIRTUAL_HOSTED_STYLE_REQUEST \
-          -e GRAPH_NAMESPACE -e GRAPH_ID -e GRAPH_DATA_PATH -e GRAPH_CELL_ID \
-          -e GRAPH_CELLS -e GRAPH_NODE_ID -e GRAPH_BOLT_NODE_ADDRESSES \
-          -e GRAPH_ADVERTISED_BOLT_ADDR -e GRAPH_ALLOW_PLAINTEXT \
-          -e GRAPH_DATA_CACHE_DIR -e RUST_MIN_STACK \
-          -e GRAPH_AUTH_TOKEN_FILE=/tmp/graph/auth-token \
-          ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      initCommands:
+        - install -d -m 700 /home/zerops/hydradb
+        - sh -c 'umask 077; printf "%s" "$GRAPH_AUTH_TOKEN" > /home/zerops/hydradb/auth-token'
+        - chmod 0444 /home/zerops/hydradb/auth-token
+        - >-
+          sh -c 'for api in S3v4 S3v2; do
+          docker run --rm
+          --env S3_ENDPOINT="$AWS_ENDPOINT"
+          --env S3_ACCESS_KEY="$AWS_ACCESS_KEY_ID"
+          --env S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
+          --env S3_BUCKET="$AWS_BUCKET_NAME"
+          --entrypoint /bin/sh
+          quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+          -c "mc alias set probe \"\$S3_ENDPOINT\" \"\$S3_ACCESS_KEY\" \"\$S3_SECRET_KEY\" --api $api --path on >/dev/null && mc stat \"probe/\$S3_BUCKET\" >/dev/null"
+          && echo "object storage preflight passed with $api" && exit 0;
+          done; echo "object storage preflight failed" >&2; exit 1'
+      start: >-
+        docker run --rm --network=host
+        --volume /home/zerops/hydradb/auth-token:/tmp/graph/auth-token:ro
+        --env CLOUD_PROVIDER --env AWS_ENDPOINT --env AWS_BUCKET_NAME
+        --env AWS_ACCESS_KEY_ID --env AWS_SECRET_ACCESS_KEY --env AWS_DEFAULT_REGION
+        --env AWS_ALLOW_HTTP --env AWS_VIRTUAL_HOSTED_STYLE_REQUEST
+        --env GRAPH_NAMESPACE --env GRAPH_ID --env GRAPH_DATA_PATH --env GRAPH_CELL_ID
+        --env GRAPH_CELLS --env GRAPH_NODE_ID --env GRAPH_BOLT_NODE_ADDRESSES
+        --env GRAPH_ADVERTISED_BOLT_ADDR --env GRAPH_ALLOW_PLAINTEXT
+        --env GRAPH_DATA_CACHE_DIR --env RUST_MIN_STACK
+        --env GRAPH_AUTH_TOKEN_FILE=/tmp/graph/auth-token
+        ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
       ports:
         - port: 7687
-          protocol: TCP
         - port: 8443
-          protocol: TCP
           httpSupport: true
         - port: 9090
-          protocol: TCP
           httpSupport: true
       healthCheck:
         httpGet:
@@ -77,22 +88,67 @@ zerops:
         GRAPH_INDEXER_RETAIN_PREVIOUS: "1"
         GRAPH_INDEXER_BUILD_MODE: full
         RUST_MIN_STACK: "33554432"
-      start: |
-        docker run --rm --network=host \
-          --entrypoint /usr/local/bin/graph-indexer \
-          -e CLOUD_PROVIDER -e AWS_ENDPOINT -e AWS_BUCKET_NAME \
-          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
-          -e AWS_ALLOW_HTTP -e AWS_VIRTUAL_HOSTED_STYLE_REQUEST \
-          -e GRAPH_NAMESPACE -e GRAPH_ID -e GRAPH_DATA_PATH -e GRAPH_CELLS \
-          -e GRAPH_INDEXER_ADMIN_ADDR -e GRAPH_INDEXER_INTERVAL_MS \
-          -e GRAPH_INDEXER_RETAIN_PREVIOUS -e GRAPH_INDEXER_BUILD_MODE \
-          -e RUST_MIN_STACK \
-          ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
+      start: >-
+        docker run --rm --network=host
+        --entrypoint /usr/local/bin/graph-indexer
+        --env CLOUD_PROVIDER --env AWS_ENDPOINT --env AWS_BUCKET_NAME
+        --env AWS_ACCESS_KEY_ID --env AWS_SECRET_ACCESS_KEY --env AWS_DEFAULT_REGION
+        --env AWS_ALLOW_HTTP --env AWS_VIRTUAL_HOSTED_STYLE_REQUEST
+        --env GRAPH_NAMESPACE --env GRAPH_ID --env GRAPH_DATA_PATH --env GRAPH_CELLS
+        --env GRAPH_INDEXER_ADMIN_ADDR --env GRAPH_INDEXER_INTERVAL_MS
+        --env GRAPH_INDEXER_RETAIN_PREVIOUS --env GRAPH_INDEXER_BUILD_MODE
+        --env RUST_MIN_STACK
+        ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
       ports:
         - port: 9091
-          protocol: TCP
           httpSupport: true
       healthCheck:
         httpGet:
           port: 9091
           path: /readyz
+
+  - setup: hydratraceengine
+    build:
+      base: nodejs@24
+      buildCommands:
+        - |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          pnpm install --frozen-lockfile
+          pnpm verify
+          pnpm scan:fixture
+          pnpm --filter @hydratrace/engine run build:zerops
+      deployFiles:
+        - apps/engine/dist/server.mjs
+    run:
+      base: nodejs@24
+      envVariables:
+        NODE_ENV: production
+        ENGINE_HOST: 0.0.0.0
+        ENGINE_PORT: "4100"
+        ENGINE_RATE_LIMIT_PER_MINUTE: "120"
+        WEB_ORIGIN: https://hydratrace.vercel.app
+        CONVEX_URL: https://accomplished-skunk-643.convex.cloud
+        HYDRATRACE_JOB_STATE_DIR: /var/www/.hydratrace/jobs
+        HYDRATRACE_AUTO_SEED_DEMO: "false"
+        HYDRADB_BOLT_URI: bolt://hydradbnode:7687
+        HYDRADB_USERNAME: neo4j
+        HYDRADB_AUTH_TOKEN: ${hydradbnode_graphAuthToken}
+        HYDRADB_DATABASE: default
+        HYDRADB_CONSISTENCY: strong
+        HYDRADB_HTTP_URL: http://hydradbnode:8443
+        HYDRADB_ADMIN_URL: http://hydradbnode:9090
+        HYDRADB_INDEXER_ADMIN_URL: http://hydradbindexer:9091
+        HYDRADB_GRAPH_ID: default
+        HYDRADB_CELL_ID: cell-0
+        HYDRADB_NAMESPACE: production
+        OSV_BASE_URL: https://api.osv.dev
+        AI_GATEWAY_URL: https://hydratrace-ai-gateway.abinashyadav3-141.workers.dev
+      ports:
+        - port: 4100
+          httpSupport: true
+      start: node apps/engine/dist/server.mjs
+      healthCheck:
+        httpGet:
+          port: 4100
+          path: /ready

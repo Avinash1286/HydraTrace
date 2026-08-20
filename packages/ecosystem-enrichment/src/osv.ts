@@ -37,6 +37,12 @@ export interface OsvExactQueryResult {
   query: OsvPackageQuery;
   advisoryIds: string[];
   advisories: OsvAdvisorySummary[];
+  provenance: {
+    source: "osv";
+    matchType: "exact-package-version";
+    queryUrl: string;
+    advisoryUrls: string[];
+  };
 }
 
 export interface OsvClientOptions {
@@ -101,6 +107,14 @@ export class OsvClient {
           const advisory = advisoryById.get(id);
           return advisory === undefined ? [] : [advisory];
         }),
+        provenance: {
+          source: "osv",
+          matchType: "exact-package-version",
+          queryUrl: `${this.baseUrl}/v1/querybatch`,
+          advisoryUrls: advisoryIds.map(
+            (id) => `${this.baseUrl}/v1/vulns/${encodeURIComponent(id)}`,
+          ),
+        },
       };
     });
   }

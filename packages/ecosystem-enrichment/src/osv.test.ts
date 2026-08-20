@@ -40,6 +40,12 @@ describe("OSV exact-version enrichment", () => {
 
     expect(first[0]?.advisoryIds).toEqual(["GHSA-test-0001"]);
     expect(first[0]?.advisories[0]?.aliases).toEqual(["CVE-2026-0001"]);
+    expect(first[0]?.provenance).toEqual({
+      source: "osv",
+      matchType: "exact-package-version",
+      queryUrl: "https://api.osv.dev/v1/querybatch",
+      advisoryUrls: ["https://api.osv.dev/v1/vulns/GHSA-test-0001"],
+    });
     expect(first[1]?.advisories).toEqual([]);
     expect(second).toEqual(first);
     expect(fetchMock).toHaveBeenCalledTimes(2);

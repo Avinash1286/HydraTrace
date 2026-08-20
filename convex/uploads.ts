@@ -1,32 +1,28 @@
-import { mutation, query } from "./_generated/server.js";
+import { internalMutation, internalQuery } from "./_generated/server.js";
 import { v } from "convex/values";
 
-export const generateUploadUrl = mutation({
+export const generateUploadUrl = internalMutation({
   args: {},
   handler: (ctx) => ctx.storage.generateUploadUrl(),
 });
 
-export const record = mutation({
-  args: {
-    storageId: v.id("_storage"),
-    fileName: v.string(),
-    contentType: v.string(),
-    byteLength: v.number(),
-    sha256: v.string(),
-    repositoryId: v.optional(v.id("repositories")),
-  },
-  handler: async (ctx, args) => {
-    if (args.byteLength < 1 || args.byteLength > 5_000_000) throw new Error("Upload exceeds the 5 MB engine limit");
-    if (!/^[0-9a-f]{64}$/u.test(args.sha256)) throw new Error("Upload SHA-256 is invalid");
-    return ctx.db.insert("uploads", {
-      ...args,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
-    });
+export const deleteExpired = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const expired = await ctx.db.query("uploads")
+      .withIndex("by_expiry", (q) => q.lt("expiresAt", Date.now()))
+      .take(100);
+    for (const upload of expired) {
+      await ctx.storage.delete(upload.storageId);
+      await ctx.db.delete(upload._id);
+    }
+    return expired.length;
   },
 });
 
-export const get = query({
-  args: { uploadId: v.id("uploads") },
-  handler: (ctx, args) => ctx.db.get(args.uploadId),
+export const isStorageRecorded = internalQuery({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => (await ctx.db.query("uploads")
+    .withIndex("by_storage_id", (q) => q.eq("storageId", args.storageId))
+    .first()) !== null,
 });

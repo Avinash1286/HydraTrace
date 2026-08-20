@@ -21,4 +21,13 @@ describe("weighted remediation solver", () => {
     const unsafe = remediationCandidate({ dependencyName: "bad", fromVersion: "1", toVersion: "2", semverImpact: "major", eliminatedPathIds: [id(1)], affectedServices: [], lockfileChurn: 0, deprecated: true, knownVulnerable: false, verification: "PROPOSED", evidenceRefs: [] });
     expect(solveRemediation([id(1)], [unsafe]).uncoveredPathIds).toEqual([id(1)]);
   });
+
+  it("never turns a merely proposed client candidate into an automatic recommendation", () => {
+    const proposed = remediationCandidate({ dependencyName: "gateway", fromVersion: "1.0.0", toVersion: "1.0.1", semverImpact: "patch", eliminatedPathIds: [id(1)], affectedServices: ["api"], lockfileChurn: 0, deprecated: false, knownVulnerable: false, verification: "PROPOSED", evidenceRefs: [] });
+    expect(solveRemediation([id(1)], [proposed])).toMatchObject({
+      candidates: [],
+      coveredPathIds: [],
+      uncoveredPathIds: [id(1)],
+    });
+  });
 });

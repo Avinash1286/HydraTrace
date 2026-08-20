@@ -50,7 +50,9 @@ export interface LockfileSimulationInput {
 export interface LockfileSimulationResult {
   command: readonly string[];
   exitCode: number;
+  timedOut: boolean;
   affectedPathCount: number;
+  resolvedDependencyVersions: readonly string[];
   lockfileChurn: number;
   verification: "LOCKFILE_VERIFIED" | "FAILED";
   stdout: string;

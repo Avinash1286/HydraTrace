@@ -44,11 +44,96 @@ describe("signed Convex/engine requests", () => {
     }, `${body} `)).toThrow(/invalid/u);
   });
 
+  it("rejects an unsigned dispatch before execution", async () => {
+    const execute = vi.fn();
+    const application = Fastify();
+    await application.register(rawBody, { field: "rawBody", global: false, encoding: false, runFirst: true });
+    registerSignedJobRoutes(application, execute, secret, new MemoryJobStatusStore());
+    const response = await application.inject({
+      method: "POST",
+      url: "/v1/internal/jobs/dispatch",
+      body: {
+        jobId: "job-unsigned",
+        idempotencyKey: "a".repeat(64),
+        callbackUrl: "https://convex.example.test/callbacks/progress",
+        scan: {
+          content: "{}",
+          sourceRef: "package-lock.json",
+          repositoryId: "fixture/unsigned",
+          commitSha: "abc123",
+          observedAt: 1,
+        },
+      },
+    });
+    expect(response.statusCode, response.body).toBe(401);
+    expect(response.json()).toMatchObject({ error: "INVALID_SIGNATURE" });
+    expect(execute).not.toHaveBeenCalled();
+    await application.close();
+  });
+
+  it("sends a signed acknowledgement before serialized progress callbacks", async () => {
+    process.env.VERCEL = "1";
+    const stages: string[] = [];
+    let callbacksInFlight = 0;
+    let maximumCallbacksInFlight = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      callbacksInFlight += 1;
+      maximumCallbacksInFlight = Math.max(maximumCallbacksInFlight, callbacksInFlight);
+      const callbackBody = String(init?.body);
+      const callback = JSON.parse(callbackBody) as { stage: string };
+      const headers = new Headers(init?.headers);
+      const timestamp = headers.get("x-hydratrace-timestamp");
+      const requestId = headers.get("x-hydratrace-request-id");
+      expect(timestamp).not.toBeNull();
+      expect(requestId).not.toBeNull();
+      expect(headers.get("x-hydratrace-signature")).toBe(
+        signHydraTraceRequest(secret, timestamp!, requestId!, callbackBody),
+      );
+      stages.push(callback.stage);
+      await Promise.resolve();
+      callbacksInFlight -= 1;
+      return new Response(null, { status: 204 });
+    }));
+    const application = Fastify();
+    await application.register(rawBody, { field: "rawBody", global: false, encoding: false, runFirst: true });
+    registerSignedJobRoutes(application, async (_scan, progress) => {
+      progress("ACQUIRING", "Acquiring immutable input");
+      progress("PARSING", "Parsing dependency graph");
+      return { graphWrite: { nodes: { created: 1 }, relationships: { created: 1 } } };
+    }, secret, new MemoryJobStatusStore());
+    await application.ready();
+
+    const dispatchBody = JSON.stringify({
+      jobId: "job-callback-order",
+      idempotencyKey: "c".repeat(64),
+      callbackUrl: "https://convex.example.test/callbacks/progress",
+      scan: {
+        content: "{\"lockfileVersion\":3,\"packages\":{}}",
+        sourceRef: "package-lock.json",
+        repositoryId: "fixture/callback-order",
+        commitSha: "abc123",
+        observedAt: 1,
+      },
+    });
+    const dispatched = await application.inject({
+      method: "POST",
+      url: "/v1/internal/jobs/dispatch",
+      payload: dispatchBody,
+      headers: signedHeaders(secret, dispatchBody, "dispatch:callback-order"),
+    });
+
+    expect(dispatched.statusCode, dispatched.body).toBe(202);
+    expect(stages).toEqual(["ACKNOWLEDGED", "ACQUIRING", "PARSING", "COMPLETE"]);
+    expect(maximumCallbacksInFlight).toBe(1);
+    await application.close();
+  });
+
   it("replays an interrupted checkpoint and persists completion when callbacks are lost", async () => {
     process.env.VERCEL = "1";
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("callback connection lost")));
     const store = new MemoryJobStatusStore();
     const idempotencyKey = "d".repeat(64);
+    let dispatchedStaticOrigin: string | undefined;
     await store.put({
       jobId: "job-restart",
       idempotencyKey,
@@ -60,8 +145,9 @@ describe("signed Convex/engine requests", () => {
     let executions = 0;
     const application = Fastify();
     await application.register(rawBody, { field: "rawBody", global: false, encoding: false, runFirst: true });
-    registerSignedJobRoutes(application, async (_scan, progress) => {
+    registerSignedJobRoutes(application, async (scan, progress) => {
       executions += 1;
+      dispatchedStaticOrigin = scan.staticAnalysis?.origin;
       progress("PARSING", "resumed deterministic parsing");
       progress("WRITING_GRAPH", "idempotent graph write resumed");
       return { graphWrite: { nodes: { created: 0 }, relationships: { created: 0 } } };
@@ -78,6 +164,11 @@ describe("signed Convex/engine requests", () => {
         repositoryId: "fixture/restart",
         commitSha: "abc123",
         observedAt: 1,
+        staticAnalysis: {
+          origin: "precomputed",
+          entrypoints: ["src/index.ts"],
+          files: [{ path: "src/index.ts", source: "import 'fixture'" }],
+        },
       },
     });
     const dispatched = await application.inject({
@@ -88,6 +179,7 @@ describe("signed Convex/engine requests", () => {
     });
     expect(dispatched.statusCode).toBe(202);
     expect(executions).toBe(1);
+    expect(dispatchedStaticOrigin).toBe("precomputed");
     expect(await store.get(idempotencyKey)).toMatchObject({ state: "COMPLETE", checkpointStage: "COMPLETE" });
 
     const duplicate = await application.inject({

@@ -69,6 +69,24 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
     expect(isInt(rows?.[0]?.observedAt)).toBe(true);
   });
 
+  it("splits an idempotent write batch when HydraDB reaches its fixed runtime limit", async () => {
+    const captured: CapturedQuery[] = [];
+    const store = new HydraDbGraphStore(fakeDriver(captured, undefined, true), { batchSize: 50 });
+    const fixture = createHydraDbSmokeFixture();
+
+    await expect(store.write(fixture.records)).resolves.toMatchObject({
+      nodes: { created: 4 },
+      relationships: { created: 3 },
+    });
+
+    const writeSizes = captured
+      .filter(({ cypher }) => cypher.startsWith("UNWIND $rows AS row"))
+      .map(({ parameters }) => (parameters.rows as unknown[]).length);
+    expect(writeSizes).toContain(4);
+    expect(writeSizes).toContain(3);
+    expect(writeSizes.filter((size) => size === 1).length).toBeGreaterThan(1);
+  });
+
   it("uses SPpaths and hydrates canonical IDs from lossless Bolt values", async () => {
     const fixture = createHydraDbSmokeFixture();
     const captured: CapturedQuery[] = [];
@@ -149,7 +167,11 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
   });
 });
 
-function fakeDriver(captured: CapturedQuery[], path?: Path): Driver {
+function fakeDriver(
+  captured: CapturedQuery[],
+  path?: Path,
+  failLargeWrites = false,
+): Driver {
   return {
     verifyConnectivity: async () => undefined,
     close: async () => undefined,
@@ -159,6 +181,16 @@ function fakeDriver(captured: CapturedQuery[], path?: Path): Driver {
         parameters: Record<string, unknown> = {},
       ): Promise<QueryResult> => {
         captured.push({ cypher, parameters });
+        if (
+          failLargeWrites &&
+          cypher.startsWith("UNWIND $rows AS row") &&
+          Array.isArray(parameters.rows) &&
+          parameters.rows.length > 1
+        ) {
+          const error = new Error("client_query_runtime exceeded query timeout after 29999 ms; limit is 29999 ms") as Error & { code: string };
+          error.code = "Neo.ClientError.Transaction.Terminated";
+          throw error;
+        }
         if (cypher.includes("CALL algo.SPpaths") && path !== undefined) {
           return {
             records: [{ get: (key: string) => (key === "path" ? path : undefined) }],

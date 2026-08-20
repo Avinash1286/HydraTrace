@@ -97,6 +97,8 @@ export interface BlastRadiusFinding {
   direct: boolean;
   developmentOnly: boolean;
   pathCount: number;
+  /** True when the traversal cap prevents pathCount from being exact. */
+  pathCountTruncated: boolean;
   displayedPaths: readonly EvidencePath[];
   pathsTruncated: boolean;
   reachability: ReachabilityLevel;
@@ -124,12 +126,41 @@ export interface BlastRadiusQuery {
   at?: number;
   environments?: readonly string[];
   includeDevelopment?: boolean;
+  /** Internal/public projection offset for the displayed path window. */
+  pathOffset?: number;
   pathDisplayLimit?: number;
   pathCountLimit?: number;
   maxDepth?: number;
   offset?: number;
   limit?: number;
+  /** Internal exact-finding selector used by the bounded finding detail route. */
+  findingId?: StableId;
 }
+
+/**
+ * A dependency path already traversed by the configured graph store. Keeping
+ * this transport-shaped type independent of a particular database lets the
+ * in-memory store remain the deterministic reference implementation.
+ */
+export interface TraversedDependencyPath {
+  nodeIds: readonly StableId[];
+  relationshipIds: readonly StableId[];
+}
+
+export interface TraversedDependencyPathSet {
+  paths: readonly TraversedDependencyPath[];
+  truncated: boolean;
+}
+
+export interface BlastRadiusPathLookupInput {
+  snapshotId: StableId;
+  affectedPackageVersionId: StableId;
+  targetResolutionIds: ReadonlySet<StableId>;
+}
+
+export type BlastRadiusPathLookup = (
+  input: BlastRadiusPathLookupInput,
+) => TraversedDependencyPathSet | undefined;
 
 export interface BlastRadiusResult {
   incidentId: StableId;
@@ -138,6 +169,7 @@ export interface BlastRadiusResult {
     at?: number;
     environments: readonly string[];
     includeDevelopment: boolean;
+    pathOffset: number;
     pathDisplayLimit: number;
     pathCountLimit: number;
     maxDepth: number;
@@ -185,5 +217,8 @@ export interface ExposureTimeline {
   incidentId: StableId;
   startsAt: number | null;
   endsAt: number | null;
+  sourceFindingCount: number;
+  consideredFindingCount: number;
+  sourceFindingsTruncated: boolean;
   events: readonly TimelineEvent[];
 }

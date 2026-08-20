@@ -12,6 +12,22 @@ export interface NpmVersionMetadata {
   maintainers: readonly { name?: string; email?: string; source: "npm-registry" }[];
   publishedAt?: number;
   createdAt?: number;
+  provenance: {
+    source: "npm-registry";
+    matchType: "exact-package-version";
+    packageUrl: string;
+  };
+}
+
+export interface NpmAvailableVersion {
+  name: string;
+  version: string;
+  deprecated?: string;
+  provenance: {
+    source: "npm-registry";
+    matchType: "exact-package-version";
+    packageUrl: string;
+  };
 }
 export interface NpmRegistryClientOptions { cache: ResponseCache; baseUrl?: string; fetch?: typeof globalThis.fetch; now?: () => number; cacheTtlMs?: number; }
 
@@ -32,9 +48,36 @@ export class NpmRegistryClient {
       maintainers: (release.maintainers ?? record.maintainers ?? []).map((maintainer) => ({ ...(typeof maintainer.name === "string" ? { name: maintainer.name } : {}), ...(typeof maintainer.email === "string" ? { email: maintainer.email } : {}), source: "npm-registry" as const })),
       ...(parseTime(record.time?.[exactVersion]) === undefined ? {} : { publishedAt: parseTime(record.time?.[exactVersion])! }),
       ...(parseTime(record.time?.created) === undefined ? {} : { createdAt: parseTime(record.time?.created)! }),
+      provenance: {
+        source: "npm-registry",
+        matchType: "exact-package-version",
+        packageUrl: `${this.#baseUrl}/${encodeURIComponent(packageName)}`,
+      },
     };
   }
-  async #json<T>(packageName: string): Promise<T> { const key = `GET:${packageName}`; const now = this.#now(); const cached = await this.options.cache.get<T>("npm-registry", key, now); if (cached !== undefined) return cached.body; const response = await this.#fetch(`${this.#baseUrl}/${encodeURIComponent(packageName)}`, { headers: { accept: "application/json" } }); if (!response.ok) throw new Error(`npm registry returned ${response.status} for ${packageName}`); const body = await response.json() as T; await this.options.cache.put("npm-registry", key, { fetchedAt: now, expiresAt: now + this.#ttl, status: response.status, ...(response.headers.get("etag") === null ? {} : { etag: response.headers.get("etag")! }), body }); return body; }
+
+  /**
+   * Returns only versions that are explicitly present in the npm packument.
+   * Candidate selection must never infer that a semver exists from its shape.
+   */
+  async listVersions(name: string): Promise<NpmAvailableVersion[]> {
+    const packageName = normalizeNpmPackageName(name);
+    const record = await this.#json<Packument>(packageName);
+    const packageUrl = `${this.#baseUrl}/${encodeURIComponent(packageName)}`;
+    return Object.entries(record.versions ?? {})
+      .map(([version, release]) => ({
+        name: packageName,
+        version,
+        ...(typeof release.deprecated === "string" ? { deprecated: release.deprecated } : {}),
+        provenance: {
+          source: "npm-registry" as const,
+          matchType: "exact-package-version" as const,
+          packageUrl,
+        },
+      }))
+      .sort((left, right) => left.version.localeCompare(right.version));
+  }
+  async #json<T>(packageName: string): Promise<T> { const key = `GET:${packageName}`; const now = this.#now(); const cached = await this.options.cache.get<T>("npm-registry", key, now); if (cached !== undefined) return cached.body; const response = await this.#fetch(`${this.#baseUrl}/${encodeURIComponent(packageName)}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`npm registry returned ${response.status} for ${packageName}`); const body = await response.json() as T; await this.options.cache.put("npm-registry", key, { fetchedAt: now, expiresAt: now + this.#ttl, status: response.status, ...(response.headers.get("etag") === null ? {} : { etag: response.headers.get("etag")! }), body }); return body; }
 }
 
 interface Human { name?: unknown; email?: unknown; }

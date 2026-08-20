@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=https://api.app-prg1.zerops.io/api/rest/public/settings/import-project-yml-json-schema.json
+#yamlPreprocessor=on
+services:
+  - hostname: hydratracegraph
+    type: objectstorage
+    objectStorageSize: 1
+    objectStoragePolicy: private
+    priority: 40
+
+  - hostname: hydradbnode
+    type: docker@26.1
+    minContainers: 1
+    maxContainers: 1
+    verticalAutoscaling:
+      cpuMode: SHARED
+      minCpu: 1
+      maxCpu: 1
+      minRam: 1
+      maxRam: 1
+      minDisk: 5
+      maxDisk: 8
+    envSecrets:
+      graphAuthToken: <@generateRandomStringVar(<graphAuthToken>, <64>)>
+    priority: 30
+
+  - hostname: hydradbindexer
+    type: docker@26.1
+    minContainers: 1
+    maxContainers: 1
+    verticalAutoscaling:
+      cpuMode: SHARED
+      minCpu: 1
+      maxCpu: 1
+      minRam: 1
+      maxRam: 1
+      minDisk: 5
+      maxDisk: 8
+    priority: 20
+
+  - hostname: hydratraceengine
+    type: nodejs@24
+    minContainers: 1
+    maxContainers: 1
+    verticalAutoscaling:
+      cpuMode: SHARED
+      minCpu: 1
+      maxCpu: 1
+      minRam: 1
+      maxRam: 1
+      minDisk: 5
+      maxDisk: 8
+    envSecrets:
+      HYDRATRACE_JOB_SHARED_SECRET: <@generateRandomString(<64>)>
+      AI_GATEWAY_SHARED_SECRET: <@generateRandomString(<64>)>
+    enableSubdomainAccess: true
+    priority: 10

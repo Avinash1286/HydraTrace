@@ -481,7 +481,7 @@ The first release should support:
 4. Built-in demo organization
 5. CLI scan from a local repository
 
-Avoid building a full GitHub OAuth application during the hackathon. The CLI and GitHub Action demonstrate developer workflow more directly and with less setup friction.
+Avoid building a full GitHub OAuth application during the hackathon. The CLI and Vercel release gates demonstrate the developer workflow directly and with less setup friction.
 
 ## 8.2 Supported lockfiles
 
@@ -669,11 +669,13 @@ ACQUIRING
   ↓
 PARSING
   ↓
-ENRICHING
-  ↓
 WRITING_GRAPH
   ↓
+ENRICHING
+  ↓
 INDEXING
+  ↓
+WAITING_FOR_INDEX
   ↓
 ANALYZING
   ↓
@@ -1706,7 +1708,7 @@ This page directly supports the Best Use of HydraDB award.
 
 ---
 
-# 20. CLI and GitHub Action
+# 20. CLI and Vercel release gates
 
 ## CLI
 
@@ -1731,7 +1733,7 @@ CI mode:
 
 ```bash
 npx hydratrace gate \
-  --baseline main \
+  --baseline 0123456789abcdef0123456789abcdef01234567 \
   --fail-on reachable-high
 ```
 
@@ -1765,7 +1767,9 @@ Verification:
 Fresh lockfile removes all known affected paths.
 ```
 
-The action should upload a JSON or SARIF artifact and link to the incident page.
+The CLI can emit JSON or SARIF for operator-controlled CI, while Vercel runs the
+repository build and deployment gates. There is intentionally no GitHub Actions
+workflow.
 
 ---
 
@@ -2288,7 +2292,7 @@ HydraDB query confirms zero remaining affected paths.
 - Provider fallback
 - Evidence-grounded copilot
 - Markdown/JSON/SARIF exports
-- CLI and GitHub Action
+- CLI and Vercel release gates
 
 ### Completion gate
 
@@ -2313,7 +2317,7 @@ without opening a terminal, except for the brief CI demonstration.
 - Attribution
 - Apache-2.0 license for original application code
 - HydraDB AGPL attribution preserved
-- Demo data reset button
+- Demo data restore button
 - Three-minute script
 - Final production deployment
 
@@ -2443,7 +2447,7 @@ End with:
 |---|---|
 | **Technical execution** | Two lockfile parsers, immutable snapshots, AST analysis, runtime loader, job state machine, provider fallback, exact solver, sandboxed lockfile regeneration, observability and tests |
 | **HydraDB and graph-native use** | Exact dependency paths, reverse closure, temporal deployment graph, multi-source path procedures, strong verification queries, separate graph node/indexer and S3-compatible durability |
-| **Product completeness** | Public web app, scan workflow, incident center, timeline, evidence drawer, remediation UI, CLI, GitHub Action and exports |
+| **Product completeness** | Public web app, scan workflow, incident center, timeline, evidence drawer, remediation UI, CLI, Vercel release gates and exports |
 | **Quality of results** | Exact-version matching, provenance, confidence, abstention, fixture ground truth, property-based testing and post-fix verification |
 | **Originality** | Combined temporal exposure, code reachability, package-neighborhood intelligence and minimum verified remediation |
 | **Best Use of HydraDB** | Strong graph model, native traversal, path evidence, snapshot consistency, graph-indexing architecture and an application that would lose its central capabilities without HydraDB |
@@ -2509,13 +2513,13 @@ HydraTrace is submission-ready only when all statements below are true.
 ## Product
 
 - [ ] Public deployed application works.
-- [ ] Built-in demo can be reset.
+- [ ] Built-in demo can be restored idempotently.
 - [ ] Incident workflow fits within the three-minute video.
 - [ ] Graph visualization remains responsive.
 - [ ] Timeline is understandable without explanation.
 - [ ] Evidence can be inspected.
 - [ ] Report export works.
-- [ ] CLI and GitHub Action are documented.
+- [ ] CLI and Vercel release workflow are documented.
 
 ## Submission
 

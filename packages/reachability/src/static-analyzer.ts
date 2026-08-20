@@ -1,4 +1,5 @@
 import { stableIdFromCanonicalKey } from "@hydratrace/domain";
+import { builtinModules } from "node:module";
 import ts from "typescript";
 import type {
   StaticAnalysisInput,
@@ -118,7 +119,12 @@ function resolveRelative(importer: string, specifier: string, files: ReadonlyMap
 
 function resolveKnownFile(path: string, files: ReadonlyMap<string, { path: string; source: string }>): { path: string; source: string } | undefined {
   const withoutJavaScriptExtension = path.replace(/\.(?:mjs|cjs|js|jsx)$/u, "");
-  const candidates = [path, `${path}.ts`, `${path}.tsx`, `${path}.js`, `${path}.jsx`, `${withoutJavaScriptExtension}.ts`, `${withoutJavaScriptExtension}.tsx`, `${path}/index.ts`, `${path}/index.tsx`, `${path}/index.js`];
+  const candidates = [
+    path,
+    `${path}.ts`, `${path}.tsx`, `${path}.js`, `${path}.jsx`, `${path}.mts`, `${path}.cts`, `${path}.mjs`, `${path}.cjs`,
+    `${withoutJavaScriptExtension}.ts`, `${withoutJavaScriptExtension}.tsx`, `${withoutJavaScriptExtension}.mts`, `${withoutJavaScriptExtension}.cts`,
+    `${path}/index.ts`, `${path}/index.tsx`, `${path}/index.js`, `${path}/index.jsx`, `${path}/index.mts`, `${path}/index.cts`, `${path}/index.mjs`, `${path}/index.cjs`,
+  ];
   for (const candidate of candidates) {
     const file = files.get(normalizePath(candidate));
     if (file !== undefined) return file;
@@ -136,6 +142,9 @@ function normalizePath(value: string): string {
 }
 
 function isRelativeSpecifier(value: string): boolean { return value.startsWith("./") || value.startsWith("../") || value.startsWith("/"); }
-function isNodeBuiltin(value: string): boolean { return value.startsWith("node:") || ["fs", "path", "url", "module", "crypto", "http", "https", "stream", "events", "util"].includes(value.split("/")[0] ?? value); }
+const nodeBuiltins = new Set(builtinModules.flatMap((name) => [name, name.replace(/^node:/u, "")]));
+function isNodeBuiltin(value: string): boolean {
+  return value.startsWith("node:") || nodeBuiltins.has(value) || nodeBuiltins.has(value.split("/")[0] ?? value);
+}
 function packageNameFromSpecifier(value: string): string { const parts = value.split("/"); return value.startsWith("@") ? `${parts[0]}/${parts[1]}` : (parts[0] ?? value); }
 function staticEvidenceRef(commitSha: string, file: string, value: string): string { return `E-STATIC-${stableIdFromCanonicalKey(`static:${commitSha}:${file}:${value}`)}`; }

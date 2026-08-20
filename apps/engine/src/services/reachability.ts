@@ -5,6 +5,12 @@ import { analyzeStaticImports, type RuntimeTrace } from "@hydratrace/reachabilit
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { persistRuntimeReachability, persistStaticReachability } from "./reachability-graph.js";
+import {
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  MAX_PAGE_OFFSET,
+  paginate,
+} from "./pagination.js";
 
 const stableIdSchema = z.string().regex(/^\d+$/);
 const staticBodySchema = z.object({
@@ -38,6 +44,10 @@ const evidenceParametersSchema = z.object({
   snapshotId: stableIdSchema,
   packageName: z.string().trim().min(1),
   version: z.string().trim().min(1),
+});
+const evidenceQuerySchema = z.object({
+  offset: z.coerce.number().int().min(0).max(MAX_PAGE_OFFSET).default(0),
+  limit: z.coerce.number().int().min(1).max(MAX_PAGE_LIMIT).default(DEFAULT_PAGE_LIMIT),
 });
 
 export function registerReachabilityRoutes(
@@ -99,18 +109,23 @@ export function registerReachabilityRoutes(
     "/v1/snapshots/:snapshotId/packages/:packageName/:version/reachability",
     async (request, reply) => {
       const parsed = evidenceParametersSchema.safeParse(request.params);
-      if (!parsed.success) return reply.code(400).send({ error: "INVALID_REACHABILITY_QUERY" });
+      const query = evidenceQuerySchema.safeParse(request.query);
+      if (!parsed.success || !query.success) return reply.code(400).send({ error: "INVALID_REACHABILITY_QUERY" });
       const evidence = catalog.reachabilityFor(
         parsed.data.snapshotId as StableId,
         parsed.data.packageName,
         parsed.data.version,
       );
+      const paginated = paginate(evidence, query.data.offset, query.data.limit);
       return {
         snapshotId: parsed.data.snapshotId,
         packageName: parsed.data.packageName,
         version: parsed.data.version,
         level: evidence[0]?.level ?? 1,
-        evidence,
+        evidence: paginated.items,
+        totalEvidence: evidence.length,
+        evidenceTruncated: paginated.page.truncated,
+        page: paginated.page,
       };
     },
   );

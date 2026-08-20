@@ -5,6 +5,50 @@ import { buildEngine } from "./engine.js";
 import { signHydraTraceRequest } from "./services/signed-jobs.js";
 
 describe("engine ingestion API", () => {
+  it("closes legacy evidence-mutation and package-manager routes in production mode", async () => {
+    const application = buildEngine({
+      graphStore: new InMemoryGraphStore(),
+      enableLegacyMutationRoutes: false,
+    });
+    for (const url of [
+      "/v1/package-metadata",
+      "/v1/enrichment/osv",
+      "/v1/enrichment/npm",
+      "/v1/enrichment/deps-dev",
+      "/v1/reachability/static",
+      "/v1/reachability/runtime",
+      "/v1/remediations/simulate",
+    ]) {
+      const response = await application.inject({ method: "POST", url, body: {} });
+      expect(response.statusCode, url).toBe(404);
+      expect(response.json()).toMatchObject({ error: "ROUTE_NOT_AVAILABLE" });
+    }
+    await application.close();
+  });
+
+  it("keeps liveness separate from dependency-aware readiness", async () => {
+    const application = buildEngine({
+      graphStore: new InMemoryGraphStore(),
+      readinessProbe: async () => ({
+        ready: false,
+        graph: { configured: true, healthy: false, provider: "HydraDB" },
+        indexer: { configured: true, healthy: false },
+      }),
+    });
+
+    const health = await application.inject({ method: "GET", url: "/health" });
+    const readiness = await application.inject({ method: "GET", url: "/ready" });
+    expect(health.statusCode).toBe(200);
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({
+      status: "not-ready",
+      ready: false,
+      graph: { healthy: false },
+      indexer: { healthy: false },
+    });
+    await application.close();
+  });
+
   it("accepts a signed durable dispatch and reports its idempotent status", async () => {
     const secret = "j".repeat(64);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
@@ -63,10 +107,11 @@ describe("engine ingestion API", () => {
     expect(fetchMock.mock.calls.map(([, init]) =>
       JSON.parse(String((init as RequestInit | undefined)?.body)) as { stage: string })
       .map(({ stage }) => stage)).toEqual([
+        "ACKNOWLEDGED",
         "ACQUIRING",
         "PARSING",
-        "ENRICHING",
         "WRITING_GRAPH",
+        "ENRICHING",
         "INDEXING",
         "WAITING_FOR_INDEX",
         "ANALYZING",
@@ -76,7 +121,7 @@ describe("engine ingestion API", () => {
     fetchMock.mockRestore();
   });
 
-  it("resets the complete historical Acme demo deterministically", async () => {
+  it("restores the complete historical Acme demo idempotently", async () => {
     const graphStore = new InMemoryGraphStore();
     const application = buildEngine({ graphStore });
     const first = await application.inject({ method: "POST", url: "/v1/demo/reset" });
@@ -112,14 +157,163 @@ describe("engine ingestion API", () => {
       expect.objectContaining({ type: "FIXED_SNAPSHOT_DEPLOYED", serviceId: "checkout-api" }),
       expect.objectContaining({ type: "FINAL_EXPOSURE_PATH_REMOVED" }),
     ]));
-    expect(second.json().graphWrite).toEqual({ nodesCreated: 0, relationshipsCreated: 0 });
+    expect(second.json()).toEqual(first.json());
     const supersedes = await graphStore.matchRelationships({
       type: "SUPERSEDES",
       limit: 100,
     });
-    expect(supersedes).toHaveLength(4);
+    expect(supersedes).toHaveLength(5);
     expect(candidates.statusCode).toBe(200);
-    expect(candidates.json().candidates.length).toBeGreaterThanOrEqual(2);
+    expect(candidates.json()).toMatchObject({
+      state: "READY",
+      complete: true,
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ verification: "LOCKFILE_VERIFIED" }),
+      ]),
+      evidence: expect.arrayContaining([
+        expect.objectContaining({
+          fictionalFixture: expect.objectContaining({ provider: "built-in-fictional-fixture" }),
+          simulation: expect.objectContaining({ cached: true }),
+        }),
+      ]),
+    });
+    await application.close();
+  });
+
+  it("uses graph-store path traversal for exact temporal incident analysis", async () => {
+    const graphStore = new InMemoryGraphStore();
+    const pathSpy = vi.spyOn(graphStore, "findPaths");
+    const application = buildEngine({ graphStore });
+    const seeded = await application.inject({ method: "POST", url: "/v1/demo/reset" });
+    const incidentId = seeded.json().incident.id as string;
+    pathSpy.mockClear();
+
+    const production = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/blast-radius`,
+    });
+    expect(production.statusCode, production.body).toBe(200);
+    expect(pathSpy).toHaveBeenCalled();
+    expect(production.json()).toMatchObject({
+      totalAffectedServices: 2,
+      totalPaths: 3,
+    });
+    expect(production.json().findings.map(({ serviceId }: { serviceId: string }) => serviceId)).toEqual([
+      "checkout-api",
+      "payment-worker",
+    ]);
+
+    const includingDevelopment = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/blast-radius?includeDevelopment=true`,
+    });
+    expect(includingDevelopment.json()).toMatchObject({
+      totalAffectedServices: 3,
+      totalPaths: 5,
+    });
+
+    const beforeProductionExposure = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/blast-radius?at=${Date.parse("2026-08-15T09:03:00.000Z")}`,
+    });
+    const duringProductionExposure = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/blast-radius?at=${Date.parse("2026-08-15T09:10:00.000Z")}`,
+    });
+    expect(beforeProductionExposure.json()).toMatchObject({ totalAffectedServices: 0, totalPaths: 0 });
+    expect(duringProductionExposure.json()).toMatchObject({ totalAffectedServices: 2, totalPaths: 3 });
+
+    for (const [query] of pathSpy.mock.calls) {
+      expect(query).toMatchObject({
+        relationshipType: "DEPENDS_ON_INSTANCE",
+        direction: "out",
+        minDepth: 0,
+        maxDepth: 16,
+      });
+      expect(query.maxDepth).toBeLessThanOrEqual(16);
+    }
+    await application.close();
+  });
+
+  it("refuses to analyze a silently capped graph hydration", async () => {
+    const graphStore = new InMemoryGraphStore();
+    const application = buildEngine({ graphStore });
+    const seeded = await application.inject({ method: "POST", url: "/v1/demo/reset" });
+    const incidentId = seeded.json().incident.id as string;
+    const matchRelationships = graphStore.matchRelationships.bind(graphStore);
+    vi.spyOn(graphStore, "matchRelationships").mockImplementation(async (query) => {
+      const records = await matchRelationships(query);
+      if (query.type !== "INSTANCE_OF" || records[0] === undefined) return records;
+      return Array.from({ length: 10_000 }, () => records[0]!);
+    });
+
+    const response = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/blast-radius`,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().message).toContain(
+      "reached the 10000-record limit; refusing an incomplete incident analysis",
+    );
+    await application.close();
+  });
+
+  it("uses hash-pinned cached evidence for the fictional demo and still requires strong zero-path verification", async () => {
+    const application = buildEngine({
+      graphStore: new InMemoryGraphStore(),
+      strongGraphReads: true,
+    });
+    const seeded = await application.inject({ method: "POST", url: "/v1/demo/reset" });
+    const incidentId = seeded.json().incident.id as string;
+    const generated = await application.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/remediations/candidates`,
+    });
+
+    expect(generated.statusCode, generated.body).toBe(200);
+    expect(generated.json(), generated.body).toMatchObject({ state: "READY", complete: true });
+    expect(generated.json().simulationsAttempted).toBe(0);
+    expect(generated.json().evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fictionalFixture: expect.objectContaining({ provider: "built-in-fictional-fixture" }),
+        simulation: expect.objectContaining({ cached: true, affectedPathCount: 0 }),
+      }),
+    ]));
+    expect(generated.json().candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        candidateId: expect.stringMatching(/^\d+$/),
+        verification: "LOCKFILE_VERIFIED",
+      }),
+    ]));
+
+    const proposed = await application.inject({
+      method: "POST",
+      url: `/v1/incidents/${incidentId}/remediations`,
+      body: { candidates: generated.json().candidates },
+    });
+    expect(proposed.statusCode, proposed.body).toBe(201);
+
+    const fixedSnapshots = (seeded.json().snapshots as Array<{ id: string; commitSha: string }>)
+      .filter(({ commitSha }) => commitSha.startsWith("4"))
+      .map(({ id }) => id);
+    expect(fixedSnapshots).toHaveLength(3);
+
+    const verified = await application.inject({
+      method: "POST",
+      url: `/v1/remediations/${proposed.json().runId}/verify`,
+      body: { snapshotIds: fixedSnapshots },
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(verified.json()).toMatchObject({
+      status: "VERIFIED",
+      verification: {
+        level: "STRONG_GRAPH",
+        passed: true,
+        remainingPathCount: 0,
+        snapshotIds: fixedSnapshots,
+      },
+    });
     await application.close();
   });
 
@@ -165,6 +359,15 @@ describe("engine ingestion API", () => {
         indicatorOnly: true,
       }),
     ]));
+    const restoredDemo = await restartedEngine.inject({ method: "GET", url: "/v1/demo" });
+    expect(restoredDemo.statusCode, restoredDemo.body).toBe(200);
+    expect(restoredDemo.json()).toMatchObject({
+      status: "ready",
+      fictional: true,
+      graphWrite: { nodesCreated: 0, relationshipsCreated: 0 },
+      blastRadius: { totalAffectedServices: 2, totalPaths: 3 },
+    });
+    expect(restoredDemo.json().snapshots).toHaveLength(8);
     await restartedEngine.close();
   });
 
@@ -233,12 +436,149 @@ describe("engine ingestion API", () => {
       "QUEUED",
       "ACQUIRING",
       "PARSING",
-      "ENRICHING",
       "WRITING_GRAPH",
+      "ENRICHING",
       "INDEXING",
       "WAITING_FOR_INDEX",
       "ANALYZING",
       "COMPLETE",
+    ]);
+    expect(first.json().result).toMatchObject({
+      indexer: { provider: "in-memory-reference", waited: false },
+      analysis: {
+        incidentsDiscovered: 0,
+        incidentsAnalyzed: 0,
+        truncated: false,
+        incidents: [],
+      },
+    });
+    expect(events.json().events.find(
+      ({ stage }: { stage: string }) => stage === "WAITING_FOR_INDEX",
+    )).toMatchObject({
+      message: "No external indexer wait is required for the in-memory reference store",
+    });
+    await application.close();
+  });
+
+  it("waits for a fresh healthy indexer cycle and dependency generation before completing", async () => {
+    let clock = 0;
+    const baseline = {
+      ready: true,
+      successfulCycles: 4,
+      consecutiveFailedCycles: 0,
+      generationsPublished: { DEPENDS_ON_INSTANCE: 2 },
+    };
+    const visible = {
+      ...baseline,
+      successfulCycles: 5,
+      generationsPublished: { DEPENDS_ON_INSTANCE: 3 },
+    };
+    const probe = vi.fn()
+      .mockResolvedValueOnce(baseline)
+      .mockResolvedValueOnce(baseline)
+      .mockResolvedValueOnce(visible);
+    const application = buildEngine({
+      graphStore: new InMemoryGraphStore(),
+      scanIndexerMonitor: {
+        probe,
+        timeoutMs: 20,
+        pollIntervalMs: 2,
+        now: () => clock,
+        sleep: async (milliseconds) => { clock += milliseconds; },
+      },
+    });
+    const response = await application.inject({
+      method: "POST",
+      url: "/v1/scans",
+      body: {
+        content: JSON.stringify({
+          name: "indexed-app",
+          version: "1.0.0",
+          lockfileVersion: 3,
+          packages: {
+            "": {
+              name: "indexed-app",
+              version: "1.0.0",
+              dependencies: { "indexed-dependency": "1.0.0" },
+            },
+            "node_modules/indexed-dependency": { version: "1.0.0" },
+          },
+        }),
+        sourceRef: "package-lock.json",
+        repositoryId: "fixture/indexed-workflow",
+        commitSha: "indexed-workflow-1",
+        observedAt: 1,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({
+      stage: "COMPLETE",
+      result: {
+        indexer: {
+          provider: "HydraDB",
+          waited: true,
+          baseline: { successfulCycles: 4 },
+          visible: { successfulCycles: 5 },
+        },
+      },
+    });
+    expect(probe).toHaveBeenCalledTimes(3);
+    expect(clock).toBe(2);
+    await application.close();
+  });
+
+  it("fails a scan instead of completing when index visibility misses its deadline", async () => {
+    let clock = 0;
+    const baseline = {
+      ready: true,
+      successfulCycles: 9,
+      consecutiveFailedCycles: 0,
+      generationsPublished: { DEPENDS_ON_INSTANCE: 1 },
+    };
+    const application = buildEngine({
+      graphStore: new InMemoryGraphStore(),
+      scanIndexerMonitor: {
+        probe: async () => baseline,
+        timeoutMs: 5,
+        pollIntervalMs: 2,
+        now: () => clock,
+        sleep: async (milliseconds) => { clock += milliseconds; },
+      },
+    });
+    const response = await application.inject({
+      method: "POST",
+      url: "/v1/scans",
+      body: {
+        content: JSON.stringify({
+          name: "stale-index-app",
+          version: "1.0.0",
+          lockfileVersion: 3,
+          packages: { "": { name: "stale-index-app", version: "1.0.0" } },
+        }),
+        sourceRef: "package-lock.json",
+        repositoryId: "fixture/stale-index",
+        commitSha: "stale-index-1",
+        observedAt: 1,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toMatchObject({ stage: "FAILED" });
+    expect(response.json().error).toMatch(/fresh healthy cycle/u);
+    const events = await application.inject({
+      method: "GET",
+      url: `/v1/scans/${response.json().scanId}/events`,
+    });
+    expect(events.json().events.map(({ stage }: { stage: string }) => stage)).toEqual([
+      "QUEUED",
+      "ACQUIRING",
+      "PARSING",
+      "WRITING_GRAPH",
+      "ENRICHING",
+      "INDEXING",
+      "WAITING_FOR_INDEX",
+      "FAILED",
     ]);
     await application.close();
   });
@@ -433,7 +773,7 @@ describe("engine ingestion API", () => {
     });
     expect(remediation.statusCode).toBe(201);
     expect(remediation.json()).toMatchObject({
-      solution: { exact: true, uncoveredPathIds: [] },
+      solution: { exact: true, candidates: [], uncoveredPathIds: [pathId] },
       status: "PROPOSED",
       verification: { passed: false },
     });

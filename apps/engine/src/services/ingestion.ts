@@ -17,6 +17,7 @@ export interface IngestLockfileInput {
   content: string;
   options: LockfileParserOptions;
   deploymentManifest?: string;
+  onGraphWriteStart?: () => void;
 }
 
 export interface IngestLockfileResult {
@@ -42,6 +43,7 @@ export async function ingestLockfile(
     deployment === undefined
       ? { nodes: [], relationships: [] }
       : deploymentManifestToGraphRecords(deployment, normalized.snapshot);
+  input.onGraphWriteStart?.();
   const supersedes = await supersedesRelationship(store, normalized);
   const records = {
     nodes: [...normalizedRecords.nodes, ...deploymentRecords.nodes],

@@ -63,7 +63,7 @@ export function HydraTraceApp({ apiUrl }: { apiUrl: string }) {
   }
 
   async function loadDemo(reset: boolean): Promise<void> {
-    setBusy(true); setStatus(reset ? "Resetting deterministic Acme demo…" : "Loading deterministic Acme demo…");
+    setBusy(true); setStatus(reset ? "Restoring deterministic Acme demo…" : "Loading deterministic Acme demo…");
     try {
       const value = await apiFetch(`${apiUrl}/v1/demo${reset ? "/reset" : ""}`, { method: reset ? "POST" : "GET" });
       setBlast(value.blastRadius as BlastResult);
@@ -110,10 +110,11 @@ function Overview({ metrics, blast, onNew, onReset, busy }: { metrics: Record<st
     ["Runtime-confirmed", blast?.findings.filter(({ reachability }) => reachability >= 3 && reachability <= 4).length ?? 0, "●"],
     ["Last graph update", blast === null ? "—" : new Date(blast.generatedAt).toLocaleTimeString(), "↻"],
   ];
-  return <><div className="hero-panel"><div><span className="tag">DETERMINISTIC · TEMPORAL · EVIDENCE-FIRST</span><h2>Trace a compromised package<br />to every deployed service.</h2><p>Exact lockfile resolution graphs, code reachability, runtime evidence, and verified remediation—without letting AI invent the truth.</p><div className="button-row"><button className="primary" onClick={onNew}>Investigate an incident <span>→</span></button><button className="secondary" disabled={busy} onClick={onReset}>{busy ? "Resetting…" : "Reset Acme demo"}</button></div><small className="fictional-label">The Acme Commerce incident and package names are explicitly fictional demo data.</small></div><div className="hydra-orbit"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core">HT</div><span className="node n1" /><span className="node n2" /><span className="node n3" /></div></div><div className="metric-grid">{cards.map(([label, value, icon]) => <article key={String(label)}><span className="metric-icon">{icon}</span><strong>{String(value)}</strong><small>{label}</small></article>)}</div><div className="two-column"><article className="panel"><div className="panel-title"><h3>Evidence pipeline</h3><span className="tag quiet">LIVE CONTRACT</span></div><div className="pipeline">{["Lockfile", "Canonical graph", "Deployment", "Incident", "Paths", "Verification"].map((label, index) => <div key={label}><span>{index + 1}</span><p>{label}</p>{index < 5 && <i>→</i>}</div>)}</div></article><article className="panel callout"><p className="eyebrow">TRUTH BOUNDARY</p><h3>AI explains. The graph decides.</h3><p>Version matching, exposure, reachability, risk, and remediation verification are deterministic.</p></article></div></>;
+  return <><div className="hero-panel"><div><span className="tag">DETERMINISTIC · TEMPORAL · EVIDENCE-FIRST</span><h2>Trace a compromised package<br />to every deployed service.</h2><p>Exact lockfile resolution graphs, code reachability, runtime evidence, and verified remediation—without letting AI invent the truth.</p><div className="button-row"><button className="primary" onClick={onNew}>Investigate an incident <span>→</span></button><button className="secondary" disabled={busy} onClick={onReset}>{busy ? "Restoring…" : "Restore Acme demo"}</button></div><small className="fictional-label">The Acme Commerce incident and package names are explicitly fictional demo data.</small></div><div className="hydra-orbit"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core">HT</div><span className="node n1" /><span className="node n2" /><span className="node n3" /></div></div><div className="metric-grid">{cards.map(([label, value, icon]) => <article key={String(label)}><span className="metric-icon">{icon}</span><strong>{String(value)}</strong><small>{label}</small></article>)}</div><div className="two-column"><article className="panel"><div className="panel-title"><h3>Evidence pipeline</h3><span className="tag quiet">LIVE CONTRACT</span></div><div className="pipeline">{["Lockfile", "Canonical graph", "Deployment", "Incident", "Paths", "Verification"].map((label, index) => <div key={label}><span>{index + 1}</span><p>{label}</p>{index < 5 && <i>→</i>}</div>)}</div></article><article className="panel callout"><p className="eyebrow">TRUTH BOUNDARY</p><h3>AI explains. The graph decides.</h3><p>Version matching, exposure, reachability, risk, and remediation verification are deterministic.</p></article></div></>;
 }
 
 function NewScan({ apiUrl }: { apiUrl: string }) {
+  const activeScanStorageKey = `hydratrace.active-scan:${apiUrl}`;
   const [mode, setMode] = useState<"lockfile" | "zip" | "repository">("lockfile");
   const [lockfile, setLockfile] = useState<File | null>(null);
   const [archive, setArchive] = useState<File | null>(null);
@@ -129,18 +130,83 @@ function NewScan({ apiUrl }: { apiUrl: string }) {
   const [startedAt, setStartedAt] = useState("2026-08-15T09:00");
   const [result, setResult] = useState<Record<string, any> | null>(null);
   const [events, setEvents] = useState<Array<{ stage: string; at: number; message: string }>>([]);
-  const [message, setMessage] = useState("Choose a public repository, ZIP, or exact lockfile.");
+  const [message, setMessage] = useState("Choose a repository, ZIP, or lockfile. Relevant JavaScript and TypeScript in repositories and ZIPs is analyzed automatically.");
+  const [submitting, setSubmitting] = useState(false);
+  const [activeScanId, setActiveScanId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { return window.localStorage.getItem(activeScanStorageKey); } catch { return null; }
+  });
+
+  useEffect(() => {
+    if (activeScanId === null) return;
+    let cancelled = false;
+    const deadline = Date.now() + 10 * 60_000;
+    let knownEventCount = -1;
+    setSubmitting(true);
+
+    async function poll(): Promise<void> {
+      while (!cancelled && Date.now() < deadline) {
+        try {
+          const value = await apiFetch(`${apiUrl}/v1/scans/${activeScanId}`);
+          if (cancelled) return;
+          setResult(value);
+          const terminal = terminalScanStage(String(value.stage));
+          const eventCount = Number(value.eventCount ?? -1);
+          if (terminal || eventCount !== knownEventCount) {
+            const progress = await apiFetch(`${apiUrl}/v1/scans/${activeScanId}/events?limit=100`);
+            if (cancelled) return;
+            setEvents(progress.events ?? []);
+            knownEventCount = Number(progress.total ?? eventCount);
+          }
+          if (terminal) {
+            try { window.localStorage.removeItem(activeScanStorageKey); } catch { /* best effort */ }
+            setActiveScanId(null);
+            setSubmitting(false);
+            setMessage(value.stage === "COMPLETE"
+              ? `Scan complete · ${knownEventCount < 0 ? value.eventCount : knownEventCount} durable progress events`
+              : `Scan ${String(value.stage).toLowerCase()} · ${String(value.error ?? "workflow stopped")}`);
+            return;
+          }
+          setMessage(`Scan ${String(value.stage).toLowerCase().replaceAll("_", " ")} · attempt ${String(value.attempt ?? 0)}`);
+          await delay(2_500);
+        } catch (error) {
+          if (cancelled) return;
+          setMessage(`${error instanceof Error ? error.message : "Scan status is temporarily unavailable"}. Retrying the durable scan…`);
+          await delay(5_000);
+        }
+      }
+      if (!cancelled) {
+        setSubmitting(false);
+        setMessage("The durable scan is still running. Return to this tab or reload to resume its status check.");
+      }
+    }
+
+    void poll();
+    return () => { cancelled = true; };
+  }, [activeScanId, activeScanStorageKey, apiUrl]);
+
   async function submit(): Promise<void> {
+    if (submitting) return;
     if (mode === "lockfile" && lockfile === null) { setMessage("A lockfile is required."); return; }
     if (mode === "zip" && archive === null) { setMessage("A ZIP archive is required."); return; }
-    setMessage("Parsing and writing the canonical graph…");
+    setSubmitting(true); setEvents([]); setResult(null); setMessage("Scheduling the durable scan…");
     try {
+      const staticAnalysis = staticInput === null
+        ? undefined
+        : JSON.parse(await staticInput.text()) as Record<string, unknown>;
+      const trace = runtimeTrace === null
+        ? undefined
+        : JSON.parse(await runtimeTrace.text()) as Record<string, unknown>;
       const common = {
         mode, observedAt: Date.now(), environment,
         deploymentStartedAt: new Date(startedAt).getTime(),
-        serviceId: repositoryId.split("/").at(-1) || "service",
+        ...(mode === "repository"
+          ? {}
+          : { serviceId: repositoryId.split("/").at(-1) || "service" }),
         ...(lockfilePath.trim() === "" ? {} : { lockfilePath: lockfilePath.trim() }),
         ...(manifest === null ? {} : { deploymentManifest: await manifest.text() }),
+        ...(staticAnalysis === undefined ? {} : { staticAnalysis }),
+        ...(trace === undefined ? {} : { runtimeTrace: trace }),
       };
       const body = mode === "lockfile"
         ? { ...common, repositoryId, commitSha, content: await lockfile!.text(), sourceRef: lockfile!.name }
@@ -148,26 +214,21 @@ function NewScan({ apiUrl }: { apiUrl: string }) {
           ? { ...common, repositoryId, commitSha, archiveBase64: await fileAsBase64(archive!) }
           : { ...common, repositoryUrl, ref: repositoryRef };
       const value = await apiFetch(`${apiUrl}/v1/scans`, { method: "POST", body });
-      if (staticInput !== null) {
-        const source = JSON.parse(await staticInput.text()) as Record<string, unknown>;
-        await apiFetch(`${apiUrl}/v1/reachability/static`, {
-          method: "POST",
-          body: { ...source, snapshotId: value.result.snapshot.id, repositoryId: value.repositoryId, commitSha: value.commitSha },
-        });
+      setResult(value);
+      if (terminalScanStage(String(value.stage))) {
+        setSubmitting(false);
+        setMessage(value.stage === "COMPLETE" ? "Scan complete." : `Scan ${String(value.stage).toLowerCase()}.`);
+        return;
       }
-      if (runtimeTrace !== null) {
-        const trace = JSON.parse(await runtimeTrace.text()) as Record<string, unknown>;
-        await apiFetch(`${apiUrl}/v1/reachability/runtime`, {
-          method: "POST",
-          body: { ...trace, snapshotId: value.result.snapshot.id },
-        });
-      }
-      const progress = await apiFetch(`${apiUrl}/v1/scans/${value.scanId}/events?limit=100`);
-      setEvents(progress.events ?? []);
-      setResult(value); setMessage(`Scan ${value.stage.toLowerCase()} · ${progress.total ?? value.eventCount} durable progress events`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Scan failed"); }
+      const scanId = String(value.scanId);
+      try { window.localStorage.setItem(activeScanStorageKey, scanId); } catch { /* status still works while mounted */ }
+      setActiveScanId(scanId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Scan failed");
+      setSubmitting(false);
+    }
   }
-  return <><article className="panel incident-form"><div><p className="eyebrow">EXACT INGESTION</p><h2>Import an immutable snapshot</h2><p>Archives are bounded to 4 MB and inspected in memory. Repository scripts and install scripts are never executed.</p><div className="source-tabs">{(["lockfile", "zip", "repository"] as const).map((source) => <button key={source} className={mode === source ? "active" : ""} onClick={() => setMode(source)}>{source}</button>)}</div></div><div className="form-grid">{mode === "repository" && <><label>Public GitHub URL<input value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} /></label><label>Branch, tag, or SHA<input value={repositoryRef} onChange={(event) => setRepositoryRef(event.target.value)} /></label><p className="field-note">Repository ID and exact commit SHA are derived from GitHub.</p></>}{mode === "zip" && <label>Repository ZIP<input type="file" accept=".zip,application/zip" onChange={(event) => setArchive(event.target.files?.[0] ?? null)} /></label>}{mode === "lockfile" && <label>Lockfile<input type="file" accept=".json,.yaml,.yml" onChange={(event) => setLockfile(event.target.files?.[0] ?? null)} /></label>}{mode !== "lockfile" && <label>Lockfile path (optional)<input value={lockfilePath} placeholder="apps/api/package-lock.json" onChange={(event) => setLockfilePath(event.target.value)} /></label>}{mode !== "repository" && <><label>Repository ID<input value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} /></label><label>Commit SHA<input value={commitSha} onChange={(event) => setCommitSha(event.target.value)} /></label></>}<label>Environment<select value={environment} onChange={(event) => setEnvironment(event.target.value)}><option>production</option><option>staging</option><option>development</option></select></label><label>Deployment starts<input type="datetime-local" value={startedAt} onChange={(event) => setStartedAt(event.target.value)} /></label><label>Deployment manifest<input type="file" accept=".json" onChange={(event) => setManifest(event.target.files?.[0] ?? null)} /></label><label>Static-analysis JSON (optional)<input type="file" accept=".json" onChange={(event) => setStaticInput(event.target.files?.[0] ?? null)} /></label><label>Runtime trace JSON (optional)<input type="file" accept=".json" onChange={(event) => setRuntimeTrace(event.target.files?.[0] ?? null)} /></label><button className="primary" onClick={submit}>Start scan</button></div></article><article className="panel"><div className="panel-title"><h3>Scan progress</h3><span className="tag quiet">IDEMPOTENT · CONVEX-DURABLE</span></div><p>{message}</p>{events.length > 0 && <div className="pipeline">{events.map((event, index) => <div key={`${event.stage}:${event.at}:${index}`} title={event.message}><span>{index + 1}</span><p>{event.stage.replaceAll("_", " ")}</p>{index < events.length - 1 && <i>→</i>}</div>)}</div>}{result !== null && <div className="contract-grid"><p><strong>{String(result.stage)}</strong>Terminal workflow state</p><p><strong>{String(result.result?.counts?.resolutions ?? 0)}</strong>Resolution instances</p><p><strong>{String(result.result?.counts?.dependencyEdges ?? 0)}</strong>Dependency edges</p><p><strong>{String(result.result?.graphWrite?.nodes?.created ?? 0)}</strong>New graph nodes</p></div>}</article></>;
+  return <><article className="panel incident-form"><div><p className="eyebrow">EXACT INGESTION</p><h2>Import an immutable snapshot</h2><p>Archives are bounded to 4 MB and inspected in memory. Relevant JavaScript and TypeScript source in repository or ZIP scans is analyzed automatically; repository and install scripts are never executed.</p><div className="source-tabs">{(["lockfile", "zip", "repository"] as const).map((source) => <button key={source} className={mode === source ? "active" : ""} onClick={() => setMode(source)}>{source}</button>)}</div></div><div className="form-grid">{mode === "repository" && <><label>Public GitHub URL<input value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} /></label><label>Branch, tag, or SHA<input value={repositoryRef} onChange={(event) => setRepositoryRef(event.target.value)} /></label><p className="field-note">Repository ID and exact commit SHA are derived from GitHub.</p></>}{mode === "zip" && <label>Repository ZIP<input type="file" accept=".zip,application/zip" onChange={(event) => setArchive(event.target.files?.[0] ?? null)} /></label>}{mode === "lockfile" && <label>Lockfile<input type="file" accept=".json,.yaml,.yml" onChange={(event) => setLockfile(event.target.files?.[0] ?? null)} /></label>}{mode !== "lockfile" && <label>Lockfile path (optional)<input value={lockfilePath} placeholder="apps/api/package-lock.json" onChange={(event) => setLockfilePath(event.target.value)} /></label>}{mode !== "repository" && <><label>Repository ID<input value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} /></label><label>Commit SHA<input value={commitSha} onChange={(event) => setCommitSha(event.target.value)} /></label></>}<label>Environment<select value={environment} onChange={(event) => setEnvironment(event.target.value)}><option>production</option><option>staging</option><option>development</option></select></label><label>Deployment starts<input type="datetime-local" value={startedAt} onChange={(event) => setStartedAt(event.target.value)} /></label><label>Deployment manifest<input type="file" accept=".json" onChange={(event) => setManifest(event.target.files?.[0] ?? null)} /></label><label>Static-analysis JSON override (optional)<input type="file" accept=".json" onChange={(event) => setStaticInput(event.target.files?.[0] ?? null)} /></label><label>Runtime trace JSON (optional)<input type="file" accept=".json" onChange={(event) => setRuntimeTrace(event.target.files?.[0] ?? null)} /></label><button className="primary" onClick={submit}>Start scan</button></div></article><article className="panel"><div className="panel-title"><h3>Scan progress</h3><span className="tag quiet">IDEMPOTENT · CONVEX-DURABLE</span></div><p>{message}</p>{events.length > 0 && <div className="pipeline">{events.map((event, index) => <div key={`${event.stage}:${event.at}:${index}`} title={event.message}><span>{index + 1}</span><p>{event.stage.replaceAll("_", " ")}</p>{index < events.length - 1 && <i>→</i>}</div>)}</div>}{result !== null && <div className="contract-grid"><p><strong>{String(result.stage)}</strong>Terminal workflow state</p><p><strong>{String(result.result?.counts?.resolutions ?? 0)}</strong>Resolution instances</p><p><strong>{String(result.result?.counts?.dependencyEdges ?? 0)}</strong>Dependency edges</p><p><strong>{String(result.result?.graphWrite?.nodes?.created ?? 0)}</strong>New graph nodes</p></div>}</article></>;
 }
 
 function IncidentCenter(props: { apiUrl: string; packageName: string; version: string; start: string; end: string; environment: string; includeDevelopment: boolean; setPackageName: (v: string) => void; setVersion: (v: string) => void; setStart: (v: string) => void; setEnd: (v: string) => void; setEnvironment: (v: string) => void; setIncludeDevelopment: (v: boolean) => void; analyze: () => void; busy: boolean; blast: BlastResult | null; onGraph: () => void }) {
@@ -177,9 +238,9 @@ function IncidentCenter(props: { apiUrl: string; packageName: string; version: s
     const response = await fetch(`${props.apiUrl}/v1/incidents/${props.blast.incidentId}/reports`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ format }) });
     if (!response.ok) throw new Error(`Report export failed (${response.status})`);
     const blob = await response.blob();
-    downloadBlob(blob, `hydratrace-${props.blast.incidentId}.${format === "markdown" ? "md" : "json"}`);
+    downloadBlob(blob, `hydratrace-${props.blast.incidentId}.${format === "markdown" ? "md" : format === "sarif" ? "sarif" : "json"}`);
   }
-  return <><article className="panel incident-form"><div><p className="eyebrow">NEW INCIDENT</p><h2>Define the affected release</h2><p>Exact-version evidence is intersected with immutable, half-open deployment and snapshot intervals.</p></div><div className="form-grid"><label>Package or advisory<input value={props.packageName} onChange={(event) => props.setPackageName(event.target.value)} /></label><label>Exact affected version<input value={props.version} onChange={(event) => props.setVersion(event.target.value)} /></label><label>Incident starts<input type="datetime-local" value={props.start} onChange={(event) => props.setStart(event.target.value)} /></label><label>Incident ends<input type="datetime-local" value={props.end} onChange={(event) => props.setEnd(event.target.value)} /></label><label>Environment<select value={props.environment} onChange={(event) => props.setEnvironment(event.target.value)}><option>production</option><option>staging</option><option>development</option></select></label><label className="checkbox-label"><input type="checkbox" checked={props.includeDevelopment} onChange={(event) => props.setIncludeDevelopment(event.target.checked)} />Include development-only paths</label><button className="primary" disabled={props.busy} onClick={props.analyze}>{props.busy ? "Analyzing…" : "Run blast-radius analysis"}</button></div></article>{props.blast === null ? <Empty title="No incident result yet" text="Ingest a deployment snapshot or reset the built-in demo, then run this exact-version query." /> : <><div className="metric-grid compact">{[["Affected services", props.blast.totalAffectedServices], ["Deployments", props.blast.totalAffectedDeployments], ["Complete paths", props.blast.totalPaths], ["Runtime/test confirmed", props.blast.findings.filter(({ reachability }) => reachability >= 3 && reachability <= 4).length], ["First exposure", new Date(Math.min(...props.blast.findings.map(({ firstExposedAt }) => firstExposedAt))).toLocaleTimeString()], ["Path truncation", props.blast.findings.some(({ pathsTruncated }) => pathsTruncated) ? "YES" : "NO"]].map(([label, value]) => <article key={String(label)}><strong>{value}</strong><small>{label}</small></article>)}</div><div className="report-actions"><span>Export deterministic report:</span>{(["markdown", "json", "sarif"] as const).map((format) => <button className="secondary" key={format} onClick={() => void exportReport(format)}>{format.toUpperCase()}</button>)}</div><div className="finding-list">{props.blast.findings.map((finding) => <article className="finding" key={finding.findingId}><div className="finding-main"><span className={`risk ${finding.risk.label.toLowerCase()}`}>{finding.risk.label} · {finding.risk.score}</span><h3>{finding.serviceId}</h3><p>{finding.environment} · {finding.affectedPackageName}@{finding.affectedVersion}</p><div className="evidence-row"><span>{reachabilityName(finding.reachability)}</span><span>{finding.pathCount} exact path(s)</span><span>{finding.evidenceRefs.length} evidence refs</span><span>confidence {finding.confidence}</span></div></div><div className="score-bars">{finding.risk.components.map((component) => <div key={component.name}><span>{component.name}</span><i><b style={{ width: `${Math.min(100, component.contribution * 4)}%` }} /></i><small>+{component.contribution}</small></div>)}</div><div className="button-column"><button className="secondary" onClick={() => setSelected(finding)}>Inspect evidence</button><button className="secondary" onClick={props.onGraph}>Open graph →</button></div></article>)}</div>{selected !== null && <EvidenceDrawer finding={selected} close={() => setSelected(null)} />}</>}</>;
+  return <><article className="panel incident-form"><div><p className="eyebrow">NEW INCIDENT</p><h2>Define the affected release</h2><p>Exact-version evidence is intersected with immutable, half-open deployment and snapshot intervals.</p></div><div className="form-grid"><label>Package or advisory<input value={props.packageName} onChange={(event) => props.setPackageName(event.target.value)} /></label><label>Exact affected version<input value={props.version} onChange={(event) => props.setVersion(event.target.value)} /></label><label>Incident starts<input type="datetime-local" value={props.start} onChange={(event) => props.setStart(event.target.value)} /></label><label>Incident ends<input type="datetime-local" value={props.end} onChange={(event) => props.setEnd(event.target.value)} /></label><label>Environment<select value={props.environment} onChange={(event) => props.setEnvironment(event.target.value)}><option>production</option><option>staging</option><option>development</option></select></label><label className="checkbox-label"><input type="checkbox" checked={props.includeDevelopment} onChange={(event) => props.setIncludeDevelopment(event.target.checked)} />Include development-only paths</label><button className="primary" disabled={props.busy} onClick={props.analyze}>{props.busy ? "Analyzing…" : "Run blast-radius analysis"}</button></div></article>{props.blast === null ? <Empty title="No incident result yet" text="Ingest a deployment snapshot or restore the built-in demo, then run this exact-version query." /> : <><div className="metric-grid compact">{[["Affected services", props.blast.totalAffectedServices], ["Deployments", props.blast.totalAffectedDeployments], ["Complete paths", props.blast.totalPaths], ["Runtime/test confirmed", props.blast.findings.filter(({ reachability }) => reachability >= 3 && reachability <= 4).length], ["First exposure", new Date(Math.min(...props.blast.findings.map(({ firstExposedAt }) => firstExposedAt))).toLocaleTimeString()], ["Path truncation", props.blast.findings.some(({ pathsTruncated }) => pathsTruncated) ? "YES" : "NO"]].map(([label, value]) => <article key={String(label)}><strong>{value}</strong><small>{label}</small></article>)}</div><div className="report-actions"><span>Export deterministic report:</span>{(["markdown", "json", "sarif"] as const).map((format) => <button className="secondary" key={format} onClick={() => void exportReport(format)}>{format.toUpperCase()}</button>)}</div><div className="finding-list">{props.blast.findings.map((finding) => <article className="finding" key={finding.findingId}><div className="finding-main"><span className={`risk ${finding.risk.label.toLowerCase()}`}>{finding.risk.label} · {finding.risk.score}</span><h3>{finding.serviceId}</h3><p>{finding.environment} · {finding.affectedPackageName}@{finding.affectedVersion}</p><div className="evidence-row"><span>{reachabilityName(finding.reachability)}</span><span>{finding.pathCount} exact path(s)</span><span>{finding.evidenceRefs.length} evidence refs</span><span>confidence {finding.confidence}</span></div></div><div className="score-bars">{finding.risk.components.map((component) => <div key={component.name}><span>{component.name}</span><i><b style={{ width: `${Math.min(100, component.contribution * 4)}%` }} /></i><small>+{component.contribution}</small></div>)}</div><div className="button-column"><button className="secondary" onClick={() => setSelected(finding)}>Inspect evidence</button><button className="secondary" onClick={props.onGraph}>Open graph →</button></div></article>)}</div>{selected !== null && <EvidenceDrawer finding={selected} close={() => setSelected(null)} />}</>}</>;
 }
 
 function EvidenceDrawer({ finding, close }: { finding: Finding; close: () => void }) {
@@ -192,19 +253,27 @@ function GraphView({ blast }: { blast: BlastResult | null }) {
   const [reachableOnly, setReachableOnly] = useState(false);
   const [shortestOnly, setShortestOnly] = useState(false);
   const [affectedOnly, setAffectedOnly] = useState(false);
-  const [depth, setDepth] = useState(16);
+  const [depth, setDepth] = useState(4);
   const [selectedId, setSelectedId] = useState<string>();
   const filteredBlast = useMemo(() => blast === null ? null : ({
     ...blast,
     findings: blast.findings
       .filter(({ criticality }) => !productionOnly || criticality === "production")
       .filter(({ reachability }) => !reachableOnly || (reachability >= 2 && reachability <= 4))
-      .map((finding) => ({ ...finding, displayedPaths: shortestOnly ? finding.displayedPaths.slice(0, 1) : finding.displayedPaths })),
+      .map((finding) => ({
+        ...finding,
+        displayedPaths: shortestOnly
+          ? [...finding.displayedPaths].sort((left, right) => left.nodes.length - right.nodes.length || left.pathId.localeCompare(right.pathId)).slice(0, 1)
+          : finding.displayedPaths,
+      })),
   }), [blast, productionOnly, reachableOnly, shortestOnly]);
-  const serverBounded = useMemo(() => graphFromBlast(filteredBlast), [filteredBlast]);
-  const visible = useMemo(() => graphAtDepth(serverBounded, depth, affectedOnly), [serverBounded, depth, affectedOnly]);
+  const clientGraph = useMemo(() => graphFromBlast(filteredBlast), [filteredBlast]);
+  const maximumVisibleDepth = useMemo(() => graphMaximumDepth(clientGraph), [clientGraph]);
+  const visibleDepth = Math.min(depth, maximumVisibleDepth);
+  const visible = useMemo(() => graphAtDepth(clientGraph, visibleDepth, affectedOnly), [clientGraph, visibleDepth, affectedOnly]);
+  const displayedPathCount = filteredBlast?.findings.reduce((total, finding) => total + finding.displayedPaths.length, 0) ?? 0;
   const copyEvidence = (): void => { const value = selectedId ?? blast?.findings.flatMap(({ evidenceRefs }) => evidenceRefs).join("\n"); if (value !== undefined) void navigator.clipboard.writeText(value); };
-  return <article className="panel graph-panel"><div className="panel-title"><div><p className="eyebrow">BOUNDED SERVER-SIDE SUBGRAPH</p><h2>Complete dependency evidence paths</h2></div><div className="legend"><span className="service-dot" />Service <span className="package-dot" />Package <span className="affected-dot" />Affected</div></div><div className="graph-controls"><label><input type="checkbox" checked={productionOnly} onChange={(event) => setProductionOnly(event.target.checked)} />Production only</label><label><input type="checkbox" checked={reachableOnly} onChange={(event) => setReachableOnly(event.target.checked)} />Reachable only</label><label><input type="checkbox" checked={affectedOnly} onChange={(event) => setAffectedOnly(event.target.checked)} />Affected nodes only</label><label><input type="checkbox" checked={shortestOnly} onChange={(event) => setShortestOnly(event.target.checked)} />Shortest path per finding</label><button className="secondary" onClick={() => setDepth((value) => Math.min(16, value + 1))}>Expand one hop</button><button className="secondary" onClick={() => setDepth(1)}>Collapse path</button><button className="secondary" onClick={copyEvidence}>{selectedId === undefined ? "Copy evidence IDs" : "Copy selected node ID"}</button><span>Depth {depth} · select any node to copy its ID. The full graph never enters the browser.</span></div>{blast === null ? <Empty title="Nothing to graph" text="Run an incident analysis first." /> : <><GraphPanel nodes={visible.nodes} edges={visible.edges} selectedId={selectedId} onSelect={setSelectedId} /><div className="graph-footer"><span>{visible.nodes.length} visible nodes</span><span>{visible.edges.length} relationships</span><span>Maximum path depth 16</span><span>{blast.totalPaths} complete server-counted paths</span></div></>}</article>;
+  return <article className="panel graph-panel"><div className="panel-title"><div><p className="eyebrow">CLIENT-FILTERED EVIDENCE VIEW</p><h2>Server-returned dependency paths</h2></div><div className="legend"><span className="service-dot" />Service <span className="package-dot" />Package <span className="affected-dot" />Affected</div></div><div className="graph-controls"><label><input type="checkbox" checked={productionOnly} onChange={(event) => setProductionOnly(event.target.checked)} />Production only</label><label><input type="checkbox" checked={reachableOnly} onChange={(event) => setReachableOnly(event.target.checked)} />Reachable only</label><label><input type="checkbox" checked={affectedOnly} onChange={(event) => setAffectedOnly(event.target.checked)} />Affected nodes only</label><label><input type="checkbox" checked={shortestOnly} onChange={(event) => setShortestOnly(event.target.checked)} />Shortest displayed path per finding</label><button className="secondary" disabled={maximumVisibleDepth === 0 || visibleDepth >= maximumVisibleDepth} onClick={() => setDepth((value) => Math.min(maximumVisibleDepth, value + 1))}>Expand one hop</button><button className="secondary" disabled={visibleDepth <= 1} onClick={() => setDepth(1)}>Collapse to affected package</button><button className="secondary" onClick={copyEvidence}>{selectedId === undefined ? "Copy evidence IDs" : "Copy selected node ID"}</button><span>Display depth {visibleDepth}/{maximumVisibleDepth} · select a node to copy its ID. Filters and depth run in this browser over server-returned display paths.</span></div>{blast === null ? <Empty title="Nothing to graph" text="Run an incident analysis first." /> : <><GraphPanel nodes={visible.nodes} edges={visible.edges} selectedId={selectedId} onSelect={setSelectedId} /><div className="graph-footer"><span>{visible.nodes.length} visible nodes</span><span>{visible.edges.length} relationships</span><span>{displayedPathCount} server-returned display paths</span><span>{blast.totalPaths} server-counted exact paths</span></div></>}</article>;
 }
 
 function Timeline({ events, blast }: { events: Array<{ type: string; at: number; serviceId?: string; exposureCountAfter: number }>; blast: BlastResult | null }) {
@@ -239,12 +308,97 @@ function Neighborhood({ apiUrl }: { apiUrl: string }) {
 }
 
 function Remediation({ apiUrl, blast, snapshots }: { apiUrl: string; blast: BlastResult | null; snapshots: DemoSnapshot[] }) {
-  const [run, setRun] = useState<Record<string, any> | null>(null); const [message, setMessage] = useState("Generate server-side candidates, then solve exact weighted path cover."); const [packageJson, setPackageJson] = useState<File | null>(null); const [packageLock, setPackageLock] = useState<File | null>(null); const [simulation, setSimulation] = useState<Record<string, any> | null>(null);
-  async function propose(): Promise<void> { if (blast === null) return; try { const generated = await apiFetch(`${apiUrl}/v1/incidents/${blast.incidentId}/remediations/candidates`); const value = await apiFetch(`${apiUrl}/v1/incidents/${blast.incidentId}/remediations`, { method: "POST", body: { candidates: generated.candidates } }); setRun(value); setMessage(value.solution.uncoveredPathIds.length === 0 ? "Every enumerated path is covered by the minimum safe candidate set." : `${value.solution.uncoveredPathIds.length} paths remain uncovered.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Proposal failed"); } }
-  async function simulate(): Promise<void> { const candidate = run?.solution?.candidates?.[0]?.candidate; if (candidate === undefined || packageJson === null || packageLock === null || blast === null) { setMessage("Choose package.json and package-lock.json after generating a proposal."); return; } try { const value = await apiFetch(`${apiUrl}/v1/remediations/simulate`, { method: "POST", body: { packageJson: await packageJson.text(), packageLock: await packageLock.text(), dependencyName: candidate.dependencyName, toVersion: candidate.toVersion, affectedPackageName: blast.findings[0]?.affectedPackageName, affectedVersions: [...new Set(blast.findings.map(({ affectedVersion }) => affectedVersion))], repositoryId: blast.findings[0]?.repositoryId, commitSha: "remediation-simulation" } }); setSimulation(value); setMessage(`${value.verification} · ${value.affectedPathCount} affected path(s) in regenerated lockfile`); } catch (error) { setMessage(error instanceof Error ? error.message : "Simulation failed"); } }
-  async function verify(): Promise<void> { if (run === null) return; const fixed = snapshots.filter(({ commitSha }) => commitSha.startsWith("4")).map(({ id }) => id); if (fixed.length === 0) { setMessage("Ingest fixed snapshots before graph verification."); return; } try { const value = await apiFetch(`${apiUrl}/v1/remediations/${run.runId}/verify`, { method: "POST", body: { snapshotIds: fixed } }); setRun(value); setMessage(value.verification.message); } catch (error) { setMessage(error instanceof Error ? error.message : "Verification failed"); } }
-  const after = run?.verification?.remainingPathCount;
-  return <><article className="panel"><div className="panel-title"><div><p className="eyebrow">CANDIDATES → SANDBOX → SET COVER → STRONG QUERY</p><h2>Smallest safe change set</h2></div><span className={`tag ${run?.status === "VERIFIED" ? "quiet" : "warning"}`}>{run?.status ?? "VERIFICATION REQUIRED"}</span></div>{blast === null ? <Empty title="No paths to remediate" text="Run an incident analysis first." /> : <div className="remediation-plan"><div className="button-row"><button className="primary" onClick={propose}>Generate and solve candidates</button><button className="secondary" disabled={run === null} onClick={verify}>Run strong graph verification</button></div><p>{message}</p>{run?.solution?.candidates?.map(({ candidate, cost }: any, index: number) => <div className="change" key={candidate.candidateId}><span>{index + 1}</span><div><h3>Upgrade {candidate.dependencyName} {candidate.fromVersion} → {candidate.toVersion}</h3><p>{candidate.semverImpact} impact · transparent cost {cost.total} · {candidate.eliminatedPathIds.length} paths covered · {candidate.affectedServices.join(", ")}</p></div></div>)}<div className="simulation-box"><h3>Safe real lockfile simulation</h3><p>Runs <code>npm install --package-lock-only --ignore-scripts</code> as a bounded, secret-stripped child process.</p><div className="form-grid inline-form"><label>package.json<input type="file" accept=".json" onChange={(event) => setPackageJson(event.target.files?.[0] ?? null)} /></label><label>package-lock.json<input type="file" accept=".json" onChange={(event) => setPackageLock(event.target.files?.[0] ?? null)} /></label><button className="secondary" onClick={simulate}>Regenerate lockfile</button></div>{simulation !== null && <p><strong>{simulation.verification}</strong> · {simulation.lockfileChurn} changed lines · exit {simulation.exitCode}</p>}</div><div className="before-after"><div><small>BEFORE</small><strong>{blast.totalPaths}</strong><span>affected paths</span></div><i>→</i><div><small>AFTER {run?.verification?.level ?? "STRONG QUERY"}</small><strong>{after ?? "—"}</strong><span>{run?.verification?.passed ? "verified remaining paths" : "not yet strongly verified"}</span></div></div>{run?.verification?.passed !== true && <div className="warning-box"><strong>HydraTrace refuses to overclaim.</strong><p>{run?.verification?.message ?? "A fresh lockfile must be written and a strong-consistency HydraDB query must return zero paths for every affected service."}</p></div>}</div>}</article></>;
+  const [run, setRun] = useState<Record<string, any> | null>(null);
+  const [discovery, setDiscovery] = useState<Record<string, any> | null>(null);
+  const [message, setMessage] = useState("Attach the exact source artifacts for every affected snapshot before asking for a recommendation.");
+  const [sourceFiles, setSourceFiles] = useState<Record<string, { packageJson: File | null; packageLock: File | null }>>({});
+  const [verificationSnapshotIds, setVerificationSnapshotIds] = useState("");
+  useEffect(() => {
+    setRun(null);
+    setDiscovery(null);
+    setSourceFiles({});
+    setVerificationSnapshotIds(snapshots.filter(({ commitSha }) => commitSha.startsWith("4")).map(({ id }) => id).join(", "));
+    setMessage("Attach the exact source artifacts for every affected snapshot before asking for a recommendation.");
+  }, [blast?.incidentId, snapshots]);
+  const sourceSnapshots = [...new Map((blast?.findings ?? []).map((finding) => [finding.snapshotId, {
+    snapshotId: finding.snapshotId,
+    repositoryId: finding.repositoryId,
+    commitSha: finding.commitSha,
+  }])).values()];
+
+  function chooseSource(snapshotId: string, kind: "packageJson" | "packageLock", file: File | null): void {
+    setSourceFiles((current) => ({
+      ...current,
+      [snapshotId]: {
+        packageJson: current[snapshotId]?.packageJson ?? null,
+        packageLock: current[snapshotId]?.packageLock ?? null,
+        [kind]: file,
+      },
+    }));
+  }
+
+  async function propose(): Promise<void> {
+    if (blast === null) return;
+    try {
+      const completeSources = sourceSnapshots.filter(({ snapshotId }) =>
+        sourceFiles[snapshotId]?.packageJson !== null &&
+        sourceFiles[snapshotId]?.packageJson !== undefined &&
+        sourceFiles[snapshotId]?.packageLock !== null &&
+        sourceFiles[snapshotId]?.packageLock !== undefined);
+      const generated = completeSources.length === 0
+        ? await apiFetch(`${apiUrl}/v1/incidents/${blast.incidentId}/remediations/candidates`)
+        : await apiFetch(`${apiUrl}/v1/incidents/${blast.incidentId}/remediations/candidates`, {
+            method: "POST",
+            body: {
+              artifacts: await Promise.all(completeSources.map(async (source) => ({
+                ...source,
+                packageJson: await sourceFiles[source.snapshotId]!.packageJson!.text(),
+                packageLock: await sourceFiles[source.snapshotId]!.packageLock!.text(),
+              }))),
+            },
+          });
+      setDiscovery(generated);
+      if (generated.candidates.length === 0) {
+        setRun(null);
+        setMessage(discoveryMessage(generated));
+        return;
+      }
+      const value = await apiFetch(`${apiUrl}/v1/incidents/${blast.incidentId}/remediations`, {
+        method: "POST",
+        body: { candidates: generated.candidates },
+      });
+      setRun(value);
+      setMessage(generated.state === "READY" && value.solution.uncoveredPathIds.length === 0
+        ? "Every production incident path is covered by registry-, OSV-, and lockfile-verified candidates."
+        : `${discoveryMessage(generated)} ${value.solution.uncoveredPathIds.length} path(s) remain without a verified candidate.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Candidate discovery failed");
+    }
+  }
+
+  async function verify(): Promise<void> {
+    if (run === null) return;
+    const fixed = [...new Set(verificationSnapshotIds.split(/[\s,]+/u).map((value) => value.trim()).filter((value) => /^\d+$/u.test(value)))];
+    if (fixed.length === 0) { setMessage("Ingest fixed snapshots before graph verification."); return; }
+    try {
+      const value = await apiFetch(`${apiUrl}/v1/remediations/${run.runId}/verify`, { method: "POST", body: { snapshotIds: fixed } });
+      setRun(value); setMessage(value.verification.message);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Verification failed"); }
+  }
+
+  const incompletePlan = run === null || run.solution?.candidates?.length === 0 || run.solution?.uncoveredPathIds?.length > 0;
+  const after = run?.verification?.remainingPathCount ?? run?.solution?.uncoveredPathIds?.length;
+  const state = run?.status === "VERIFIED" ? "VERIFIED" : discovery?.state ?? run?.status ?? "VERIFICATION REQUIRED";
+  const discoveryEvidence = discovery?.evidence ?? [];
+  return <><article className="panel"><div className="panel-title"><div><p className="eyebrow">CANDIDATES → SANDBOX → SET COVER → STRONG QUERY</p><h2>Smallest safe change set</h2></div><span className={`tag ${state === "VERIFIED" || state === "READY" ? "quiet" : "warning"}`}>{state}</span></div>{blast === null ? <Empty title="No paths to remediate" text="Run an incident analysis first." /> : <div className="remediation-plan"><div className="simulation-box"><h3>Exact source artifacts</h3><p>Each affected npm snapshot needs its original files. The server checks the lockfile hash, exact registry metadata, OSV, and then runs bounded <code>npm install --package-lock-only --ignore-scripts</code>. The explicitly fictional built-in demo uses hash-pinned cached fixture evidence instead of claiming those nonexistent package names are in npm.</p>{sourceSnapshots.map((source) => <div className="form-grid inline-form" key={source.snapshotId}><p><strong>{source.repositoryId}</strong><br /><small>{source.commitSha.slice(0, 12)} · snapshot {source.snapshotId}</small></p><label>package.json<input type="file" accept=".json" onChange={(event) => chooseSource(source.snapshotId, "packageJson", event.target.files?.[0] ?? null)} /></label><label>package-lock.json<input type="file" accept=".json" onChange={(event) => chooseSource(source.snapshotId, "packageLock", event.target.files?.[0] ?? null)} /></label></div>)}</div><div className="form-grid inline-form"><label>Fixed snapshot IDs<input value={verificationSnapshotIds} placeholder="123, 456" onChange={(event) => setVerificationSnapshotIds(event.target.value)} /></label><p className="field-note">After ingesting fixed lockfiles, paste every affected service snapshot ID here for the final strong graph query.</p></div><div className="button-row"><button className="primary" onClick={propose}>Discover verified candidates</button><button className="secondary" disabled={incompletePlan} onClick={verify}>Run strong graph verification</button></div><p>{message}</p>{run?.solution?.candidates?.map(({ candidate, cost }: any, index: number) => <div className="change" key={candidate.candidateId}><span>{index + 1}</span><div><h3>Upgrade {candidate.dependencyName} {candidate.fromVersion} → {candidate.toVersion}</h3><p>{candidate.semverImpact} impact · transparent cost {cost.total} · {candidate.eliminatedPathIds.length} paths covered · {candidate.affectedServices.join(", ")} · {candidate.verification}</p></div></div>)}{discoveryEvidence.length > 0 && <div className="contract-grid">{discoveryEvidence.map((proof: any) => <p key={proof.candidateId}><strong>{proof.registry.exactVersion} · LOCKFILE_VERIFIED</strong>{proof.fictionalFixture === undefined ? "npm registry exact release · zero OSV advisories" : "hash-pinned cached evidence for the fictional built-in fixture"} · {proof.simulation.lockfileChurn} changed lockfile lines · exit {proof.simulation.exitCode}</p>)}</div>}<div className="before-after"><div><small>BEFORE</small><strong>{blast.totalPaths}</strong><span>affected paths</span></div><i>→</i><div><small>AFTER {run?.verification?.level ?? "LOCKFILE SIMULATION"}</small><strong>{after ?? "—"}</strong><span>{run?.verification?.passed ? "verified remaining paths" : "not yet strongly verified"}</span></div></div>{run?.verification?.passed !== true && <div className="warning-box"><strong>HydraTrace refuses to overclaim.</strong><p>{discovery?.state === "INCONCLUSIVE" ? discoveryMessage(discovery) : run?.verification?.message ?? "Every candidate needs exact provider evidence and a fresh lockfile; only a strong-consistency zero-path graph query can mark the result verified."}</p></div>}</div>}</article></>;
+}
+
+function discoveryMessage(discovery: Record<string, any>): string {
+  const issues = [
+    ...(discovery.providerErrors ?? []).map((error: any) => `${error.provider}: ${error.message}`),
+    ...(discovery.rejections ?? []).map((rejection: any) => `${rejection.reason}: ${rejection.message}`),
+  ];
+  return `${String(discovery.state ?? "INCONCLUSIVE")}${issues.length === 0 ? "" : ` · ${issues.slice(0, 3).join(" · ")}`}`;
 }
 
 function Copilot({ apiUrl, blast }: { apiUrl: string; blast: BlastResult | null }) {
@@ -257,12 +411,12 @@ function Engineering({ apiUrl, metrics }: { apiUrl: string; metrics: Record<stri
   const [system, setSystem] = useState<Record<string, any> | null>(null);
   useEffect(() => { void apiFetch(`${apiUrl}/v1/system`).then(setSystem).catch(() => setSystem(null)); }, [apiUrl]);
   const cards: Array<[string, string]> = [
-    ["Consistency", String(metrics.graphConsistency ?? "unknown")],
-    ["Path cap", "16 hops"],
+    ["Consistency", String(system?.graph?.consistency ?? "unknown")],
+    ["Dependency traversal cap", "16 hops"],
     ["Indexer", system?.indexer?.healthy === true ? "healthy" : system?.indexer?.configured ? "degraded" : "not configured"],
-    ["Persistence", "S3-compatible object store"],
-    ["Query p95", `${Number(metrics.hydratrace_http_request_duration_seconds_p95 ?? 0).toFixed(3)} s`],
-    ["Last index success", system?.indexer?.lastSuccessfulCycleAt ? new Date(system.indexer.lastSuccessfulCycleAt).toLocaleTimeString() : "unavailable"],
+    ["Graph provider", String(system?.graph?.provider ?? "unknown")],
+    ["HTTP request p95", `${Number(metrics.hydratrace_http_request_duration_seconds_p95 ?? 0).toFixed(3)} s`],
+    ["Indexed graph generation", String(system?.indexer?.graphGeneration ?? "unavailable")],
   ];
   return <><article className="panel engineering"><div><p className="eyebrow">BEST USE OF HYDRADB</p><h2>Why the graph is the evidence substrate</h2><p>HydraTrace stores canonical package versions separately from snapshot-specific resolution instances, preserving peer, optional, development, and multi-version topology. A relational or vector-only store would require recursive joins or approximate retrieval where exact ordered path evidence is required.</p></div><div className="schema-code"><span>Service</span><i>DEPLOYS</i><span>Deployment</span><i>USES_SNAPSHOT</i><span>LockfileSnapshot</span><i>CONTAINS</i><span>Resolution</span><i>DEPENDS_ON_INSTANCE</i><span className="hot">Resolution</span></div></article><div className="metric-grid">{cards.map(([label, value]) => <article key={label}><strong className="text-value">{value}</strong><small>{label}</small></article>)}</div><article className="panel"><h3>Native graph query contract</h3><div className="contract-grid"><p><strong>SPpaths / bounded depth 16</strong>Ordered source-to-target evidence paths use HydraDB native traversal.</p><p><strong>{String(system?.graph?.provider ?? "unknown")}</strong>Current graph provider · {String(system?.graph?.consistency ?? "unknown")} consistency.</p><p><strong>Canonical 63-bit IDs</strong>Same fact receives the same identity across imports.</p><p><strong>Immutable snapshots</strong>Historical deployments never mutate under a new scan.</p><p><strong>Complete bounded paths</strong>Path counts stay separate from the UI display limit.</p><p><strong>Strong verification</strong>Only zero-path strong reads for every affected service can mark remediation passed.</p></div></article></>;
 }
@@ -271,7 +425,28 @@ function Empty({ title, text }: { title: string; text: string }) { return <div c
 function reachabilityName(level: number): string { return ["Not present", "Installed only", "Static reachable", "Test observed", "Runtime observed", "Unknown dynamic"][level] ?? "Unknown"; }
 function graphFromBlast(blast: BlastResult | null): { nodes: GraphNode[]; edges: GraphEdge[] } { const nodes = new Map<string, GraphNode>(); const edges = new Map<string, GraphEdge>(); if (blast === null) return { nodes: [], edges: [] }; const advisory = `incident:${blast.incidentId}`; nodes.set(advisory, { id: advisory, label: "Incident / advisory", kind: "advisory" }); for (const finding of blast.findings) { const service = `service:${finding.serviceId}`; const deployment = `deployment:${finding.deploymentId}`; const snapshot = `snapshot:${finding.snapshotId}`; const packageVersion = `package-version:${finding.affectedPackageName}@${finding.affectedVersion}`; nodes.set(service, { id: service, label: finding.serviceId, kind: "service" }); nodes.set(deployment, { id: deployment, label: `Deployment\n${finding.environment}`, kind: "context" }); nodes.set(snapshot, { id: snapshot, label: "Lockfile snapshot", kind: "context" }); nodes.set(packageVersion, { id: packageVersion, label: `${finding.affectedPackageName}\n${finding.affectedVersion}`, kind: "affected" }); addGraphEdge(edges, advisory, packageVersion); for (const path of finding.displayedPaths) { const reversed = [...path.nodes].reverse(); let previous = packageVersion; for (const node of reversed) { const id = node.resolutionId; nodes.set(id, { id, label: `${node.packageName}\n${node.version}`, kind: node.packageName === finding.affectedPackageName && node.version === finding.affectedVersion ? "affected" : "package" }); addGraphEdge(edges, previous, id); previous = id; } addGraphEdge(edges, previous, snapshot); addGraphEdge(edges, snapshot, deployment); addGraphEdge(edges, deployment, service); } } return { nodes: [...nodes.values()], edges: [...edges.values()] }; }
 function addGraphEdge(edges: Map<string, GraphEdge>, source: string, target: string): void { const id = `${source}:${target}`; edges.set(id, { id, source, target }); }
+function graphMaximumDepth(graph: { nodes: GraphNode[]; edges: GraphEdge[] }): number {
+  const incoming = new Set(graph.edges.map(({ target }) => target));
+  const depth = new Map(graph.nodes.filter(({ id }) => !incoming.has(id)).map(({ id }) => [id, 0]));
+  const pending = [...depth.keys()];
+  let maximum = 0;
+  while (pending.length > 0) {
+    const current = pending.shift()!;
+    const currentDepth = depth.get(current)!;
+    maximum = Math.max(maximum, currentDepth);
+    for (const edge of graph.edges.filter(({ source }) => source === current)) {
+      if (depth.has(edge.target)) continue;
+      depth.set(edge.target, currentDepth + 1);
+      pending.push(edge.target);
+    }
+  }
+  return maximum;
+}
 function graphAtDepth(graph: { nodes: GraphNode[]; edges: GraphEdge[] }, maximumDepth: number, affectedOnly: boolean): { nodes: GraphNode[]; edges: GraphEdge[] } { const incoming = new Set(graph.edges.map(({ target }) => target)); const roots = graph.nodes.filter(({ id }) => !incoming.has(id)).map(({ id }) => id); const depth = new Map(roots.map((id) => [id, 0])); const pending = [...roots]; while (pending.length > 0) { const current = pending.shift()!; const currentDepth = depth.get(current)!; if (currentDepth >= maximumDepth) continue; for (const edge of graph.edges.filter(({ source }) => source === current)) if (!depth.has(edge.target)) { depth.set(edge.target, currentDepth + 1); pending.push(edge.target); } } const nodes = graph.nodes.filter((node) => depth.has(node.id) && (!affectedOnly || ["advisory", "affected"].includes(node.kind))); const ids = new Set(nodes.map(({ id }) => id)); return { nodes, edges: graph.edges.filter(({ source, target }) => ids.has(source) && ids.has(target)) }; }
+function terminalScanStage(stage: string): boolean {
+  return ["COMPLETE", "FAILED", "CANCELED", "CANCELLED"].includes(stage);
+}
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 async function apiFetch(url: string, init?: { method?: string; body?: unknown }): Promise<any> { const response = await fetch(url, { method: init?.method ?? "GET", headers: init?.body === undefined ? {} : { "content-type": "application/json" }, ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }) }); const value = await response.json(); if (!response.ok) throw new Error(value.message ?? value.error ?? `Request failed (${response.status})`); return value; }
 
 async function fileAsBase64(file: File): Promise<string> {

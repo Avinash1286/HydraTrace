@@ -35,4 +35,18 @@ describe("static reachability", () => {
       expression: "process.env.ADAPTER",
     });
   });
+
+  it("resolves modern module extensions and excludes Node built-ins", () => {
+    const result = analyzeStaticImports({
+      repositoryId: "acme/modern-worker",
+      commitSha: "ghi",
+      entrypoints: ["src/worker.mts"],
+      files: [
+        { path: "src/worker.mts", source: 'import "./handler.mjs"; import assert from "assert/strict";' },
+        { path: "src/handler.mts", source: 'import adapter from "external-adapter"; export { adapter };' },
+      ],
+    });
+    expect(result.analyzedFiles).toEqual(["src/handler.mts", "src/worker.mts"]);
+    expect(result.packages.map(({ packageName }) => packageName)).toEqual(["external-adapter"]);
+  });
 });

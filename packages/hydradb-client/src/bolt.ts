@@ -151,9 +151,10 @@ export class HydraDbGraphStore implements GraphStore {
   ) {
     this.#driver = driver;
     this.#database = options.database;
-    // HydraDB v0.1.1's parser rejects long OR chains; ten IDs stays within
-    // its expression-depth ceiling while retaining bounded batching.
-    this.#batchSize = options.batchSize ?? 10;
+    // HydraDB v0.1.1 has both a shallow expression ceiling and a fixed 29,999ms
+    // query runtime. Four records keeps cold object-store reads/writes bounded;
+    // timed-out idempotent writes are split further below.
+    this.#batchSize = options.batchSize ?? 4;
     this.#consistency = options.consistency ?? "causal";
     this.#strongHttp = options.strongHttp === undefined
       ? undefined
@@ -546,19 +547,29 @@ export class HydraDbGraphStore implements GraphStore {
   async #upsertNodes(nodes: readonly GraphNodeRecord[]): Promise<void> {
     const groups = groupByPropertyShape(nodes, (node) => node.label);
     for (const group of groups.values()) {
-      for (const batch of batches(group.records, this.#batchSize)) {
+      const writeBatch = async (batch: readonly GraphNodeRecord[]): Promise<void> => {
         const setters = group.keys.map((key) => `n.${key} = row.${key}`);
         const cypher = [
           "UNWIND $rows AS row",
           "MERGE (n {id: row.vertex})",
           `SET n:${group.discriminator}${setters.length === 0 ? "" : `, ${setters.join(", ")}`}`,
         ].join("\n");
-        await this.#run(cypher, {
-          rows: batch.map((node) => ({
-            vertex: databaseId(node.id),
-            ...selectedProperties(node.properties, group.keys),
-          })),
-        });
+        try {
+          await this.#run(cypher, {
+            rows: batch.map((node) => ({
+              vertex: databaseId(node.id),
+              ...selectedProperties(node.properties, group.keys),
+            })),
+          });
+        } catch (error) {
+          if (!isHydraDbRuntimeTimeout(error) || batch.length === 1) throw error;
+          const middle = Math.ceil(batch.length / 2);
+          await writeBatch(batch.slice(0, middle));
+          await writeBatch(batch.slice(middle));
+        }
+      };
+      for (const batch of batches(group.records, this.#batchSize)) {
+        await writeBatch(batch);
       }
     }
   }
@@ -577,7 +588,7 @@ export class HydraDbGraphStore implements GraphStore {
         NodeLabel,
         NodeLabel,
       ];
-      for (const batch of batches(group.records, this.#batchSize)) {
+      const writeBatch = async (batch: readonly GraphRelationshipRecord[]): Promise<void> => {
         const setters = [
           `r.${RELATIONSHIP_STABLE_ID_PROPERTY} = row.relationship_vertex`,
           ...group.keys.map((key) => `r.${key} = row.${key}`),
@@ -588,14 +599,24 @@ export class HydraDbGraphStore implements GraphStore {
           `MERGE (from)-[r:${type} {id: row.relationship_vertex}]->(to)`,
           `SET ${setters.join(", ")}`,
         ].join("\n");
-        await this.#run(cypher, {
-          rows: batch.map((relationship) => ({
-            source_vertex: databaseId(relationship.from.id),
-            destination_vertex: databaseId(relationship.to.id),
-            relationship_vertex: databaseId(relationship.id),
-            ...selectedProperties(relationship.properties, group.keys),
-          })),
-        });
+        try {
+          await this.#run(cypher, {
+            rows: batch.map((relationship) => ({
+              source_vertex: databaseId(relationship.from.id),
+              destination_vertex: databaseId(relationship.to.id),
+              relationship_vertex: databaseId(relationship.id),
+              ...selectedProperties(relationship.properties, group.keys),
+            })),
+          });
+        } catch (error) {
+          if (!isHydraDbRuntimeTimeout(error) || batch.length === 1) throw error;
+          const middle = Math.ceil(batch.length / 2);
+          await writeBatch(batch.slice(0, middle));
+          await writeBatch(batch.slice(middle));
+        }
+      };
+      for (const batch of batches(group.records, this.#batchSize)) {
+        await writeBatch(batch);
       }
     }
   }
@@ -1043,4 +1064,11 @@ function* batches<T>(records: readonly T[], batchSize: number): Generator<T[]> {
   for (let index = 0; index < records.length; index += batchSize) {
     yield records.slice(index, index + batchSize);
   }
+}
+
+function isHydraDbRuntimeTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error ? String((error as Error & { code?: unknown }).code ?? "") : "";
+  return code === "Neo.ClientError.Transaction.Terminated" ||
+    /client_query_runtime exceeded query timeout|query timeout after 29999 ms/iu.test(error.message);
 }

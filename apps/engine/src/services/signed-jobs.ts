@@ -2,7 +2,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { stableIdFromCanonicalKey } from "@hydratrace/domain";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { ScanStage, ScanWorkflowInput } from "./scans.js";
+import {
+  resolvedScanSchema,
+  type ScanStage,
+  type ScanWorkflowInput,
+} from "./scans.js";
 import {
   jobStatusStoreFromEnvironment,
   type DurableJobStatus,
@@ -13,15 +17,7 @@ const dispatchSchema = z.object({
   jobId: z.string().trim().min(1).max(256),
   idempotencyKey: z.string().regex(/^[0-9a-f]{64}$/u),
   callbackUrl: z.string().url().max(2_048),
-  scan: z.object({
-    content: z.string().min(1).max(5_000_000),
-    sourceRef: z.string().trim().min(1),
-    repositoryId: z.string().trim().min(1),
-    commitSha: z.string().trim().min(1),
-    observedAt: z.number().int().nonnegative(),
-    rootPackage: z.object({ name: z.string().min(1), version: z.string().min(1) }).optional(),
-    deploymentManifest: z.string().min(1).max(100_000).optional(),
-  }).strict(),
+  scan: resolvedScanSchema,
 }).strict();
 
 export class SignedRequestVerifier {
@@ -81,7 +77,10 @@ export function registerSignedJobRoutes(
   const verifier = sharedSecret === undefined ? undefined : new SignedRequestVerifier(sharedSecret);
   const running = new Set<string>();
 
-  application.post("/v1/internal/jobs/dispatch", { config: { rawBody: true } }, async (request, reply) => {
+  application.post("/v1/internal/jobs/dispatch", {
+    bodyLimit: 15_500_000,
+    config: { rawBody: true },
+  }, async (request, reply) => {
     if (verifier === undefined) return reply.code(503).send({ error: "SIGNED_DISPATCH_NOT_CONFIGURED" });
     const rawBody = rawRequestBody(request);
     try { verifier.verify(request.headers, rawBody); }
@@ -153,6 +152,13 @@ async function executeDispatchedJob(
     job.updatedAt = Date.now();
     enqueueCallback({ jobId: job.jobId, engineJobId: job.engineJobId, stage, message, at: job.updatedAt });
   };
+  enqueueCallback({
+    jobId: job.jobId,
+    engineJobId: job.engineJobId,
+    stage: "ACKNOWLEDGED",
+    message: "Engine acknowledged the job",
+    at: job.updatedAt,
+  });
   try {
     const result = await execute(scan, progress);
     job.result = result;

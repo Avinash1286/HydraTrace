@@ -11,9 +11,11 @@ import {
   hydraDbConnectionOptionsFromEnv,
   type GraphStore,
 } from "@hydratrace/hydradb-client";
-import { analyzeBlastRadius, buildExposureTimeline, IncidentCatalog } from "@hydratrace/incident-analysis";
+import { stableIdFromCanonicalKey } from "@hydratrace/domain";
+import { buildExposureTimeline, IncidentCatalog } from "@hydratrace/incident-analysis";
 import { PackageIntelligenceCatalog } from "@hydratrace/package-intelligence";
 import { analyzeStaticImports } from "@hydratrace/reachability";
+import { simulateNpmLockfile } from "@hydratrace/remediation";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -27,12 +29,30 @@ import { registerRemediationRoutes } from "./services/remediations.js";
 import { registerScanWorkflowRoutes } from "./services/scans.js";
 import { registerAiRoutes } from "./services/ai.js";
 import { acquireScanInput } from "./services/acquisition.js";
-import { persistIncident } from "./services/graph-catalog.js";
+import {
+  analyzeBlastRadiusFromGraphStore,
+  ensureIncidentCatalogHydrated,
+  ensureSnapshotCatalogHydrated,
+  persistIncident,
+} from "./services/graph-catalog.js";
 import { persistRuntimeReachability, persistStaticReachability } from "./services/reachability-graph.js";
-import { persistPackageIntelligence } from "./services/package-metadata-graph.js";
+import {
+  hydratePackageIntelligence,
+  persistPackageIntelligence,
+} from "./services/package-metadata-graph.js";
 import { registerSignedJobRoutes } from "./services/signed-jobs.js";
 import { EngineMetrics, installRequestObservability } from "./services/observability.js";
+import { enrichScan } from "./services/scan-enrichment.js";
+import { persistScanReachability } from "./services/scan-reachability.js";
+import {
+  hydraDbIndexerMonitor,
+  waitForHydraDbIndexerVisibility,
+  type HydraDbIndexerMonitor,
+  type HydraDbIndexerSnapshot,
+} from "./services/indexer-visibility.js";
 import { builtInDemoScans, DEMO_INCIDENT_END, DEMO_INCIDENT_START } from "./demo-data.js";
+
+const SCAN_ANALYSIS_INCIDENT_LIMIT = 100;
 
 const scanBodySchema = z.object({
   content: z.string().min(1).max(5_000_000),
@@ -60,19 +80,35 @@ const osvBodySchema = z.object({
 
 export interface EngineDependencies {
   graphStore?: GraphStore;
-  osvClient?: OsvClient;
-  npmRegistryClient?: NpmRegistryClient;
-  depsDevClient?: DepsDevClient;
+  osvClient?: Pick<OsvClient, "queryExactPackages">;
+  npmRegistryClient?: Pick<NpmRegistryClient, "getVersion" | "listVersions">;
+  depsDevClient?: Pick<DepsDevClient, "dependencies">;
   incidentCatalog?: IncidentCatalog;
   packageIntelligenceCatalog?: PackageIntelligenceCatalog;
   strongGraphReads?: boolean;
   convexUrl?: string;
   aiEnvironment?: NodeJS.ProcessEnv;
   jobSharedSecret?: string;
+  scanEnrichmentEnabled?: boolean;
+  remediationSimulation?: typeof simulateNpmLockfile;
+  allowRootRemediationSimulation?: boolean;
+  enableLegacyMutationRoutes?: boolean;
+  scanIndexerMonitor?: HydraDbIndexerMonitor;
+  readinessProbe?: () => Promise<{
+    ready: boolean;
+    graph: Record<string, unknown>;
+    indexer: Record<string, unknown>;
+  }>;
 }
 
 export function buildEngine(dependencies: EngineDependencies = {}): FastifyInstance {
   const graphStore = dependencies.graphStore ?? new InMemoryGraphStore();
+  const scanIndexerMonitor = dependencies.scanIndexerMonitor ??
+    (graphStore instanceof HydraDbGraphStore
+      ? hydraDbIndexerMonitor(process.env.HYDRADB_INDEXER_ADMIN_URL ?? "", {
+          graphId: process.env.HYDRADB_GRAPH_ID ?? "default",
+        })
+      : undefined);
   const incidentCatalog = dependencies.incidentCatalog ?? new IncidentCatalog();
   const packageIntelligenceCatalog =
     dependencies.packageIntelligenceCatalog ?? new PackageIntelligenceCatalog();
@@ -115,10 +151,45 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
     max: rateLimitMax,
     timeWindow: "1 minute",
   });
+  const legacyMutationRoutesEnabled =
+    dependencies.enableLegacyMutationRoutes ?? process.env.NODE_ENV !== "production";
+  if (!legacyMutationRoutesEnabled) {
+    const disabledLegacyMutations = new Set([
+      "/v1/package-metadata",
+      "/v1/enrichment/osv",
+      "/v1/enrichment/npm",
+      "/v1/enrichment/deps-dev",
+      "/v1/reachability/static",
+      "/v1/reachability/runtime",
+      "/v1/remediations/simulate",
+    ]);
+    application.addHook("onRequest", async (request, reply) => {
+      const path = request.url.split("?", 1)[0]!;
+      if (request.method === "POST" && disabledLegacyMutations.has(path)) {
+        return reply.code(404).send({
+          error: "ROUTE_NOT_AVAILABLE",
+          message: "This legacy mutation route is disabled in production; use the signed scan workflow.",
+        });
+      }
+    });
+  }
 
   let demoSeed: Promise<Awaited<ReturnType<typeof seedBuiltInDemo>>> | undefined;
   const ensureDemo = (): Promise<Awaited<ReturnType<typeof seedBuiltInDemo>>> => {
-    demoSeed ??= seedBuiltInDemo(graphStore, incidentCatalog, packageIntelligenceCatalog);
+    if (demoSeed === undefined) {
+      demoSeed = restoreBuiltInDemoFromGraph(
+        graphStore,
+        incidentCatalog,
+        packageIntelligenceCatalog,
+      ).then((restored) => restored ??
+        seedBuiltInDemo(graphStore, incidentCatalog, packageIntelligenceCatalog))
+        .catch((error: unknown) => {
+          // A transient graph or object-storage failure must not poison every
+          // later restore attempt for the lifetime of the engine process.
+          demoSeed = undefined;
+          throw error;
+        });
+    }
     return demoSeed;
   };
   // Keep build/test behavior deterministic. Stateless demo seeding is an
@@ -158,7 +229,14 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
     },
   }));
   application.get("/health", async () => ({ status: "ok", service: "hydratrace-engine" }));
-  application.get("/ready", async () => ({ status: "ready" }));
+  application.get("/ready", async (_request, reply) => {
+    const readiness = dependencies.readinessProbe === undefined
+      ? await dependencyReadiness(graphStore)
+      : await dependencies.readinessProbe();
+    return reply
+      .code(readiness.ready ? 200 : 503)
+      .send({ status: readiness.ready ? "ready" : "not-ready", ...readiness });
+  });
   application.get("/metrics", async (request, reply) => {
     const graphConsistency = graphStore instanceof HydraDbGraphStore
       ? process.env.HYDRADB_CONSISTENCY ?? "causal"
@@ -204,10 +282,7 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
     };
   });
   application.post("/v1/demo/reset", async () => {
-    incidentCatalog.clear();
-    packageIntelligenceCatalog.clear();
-    demoSeed = seedBuiltInDemo(graphStore, incidentCatalog, packageIntelligenceCatalog);
-    return demoSeed;
+    return ensureDemo();
   });
   application.get("/v1/demo", async () => ensureDemo());
   registerIncidentRoutes(application, incidentCatalog, graphStore);
@@ -219,10 +294,19 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
     graphStore,
     dependencies.strongGraphReads ??
       (graphStore instanceof HydraDbGraphStore && process.env.HYDRADB_CONSISTENCY === "strong"),
+    {
+      npmRegistryClient,
+      osvClient,
+      simulateLockfile: dependencies.remediationSimulation ?? simulateNpmLockfile,
+      ...(dependencies.allowRootRemediationSimulation === undefined
+        ? {}
+        : { allowRootSimulation: dependencies.allowRootRemediationSimulation }),
+    },
   );
   registerAiRoutes(
     application,
     incidentCatalog,
+    graphStore,
     dependencies.aiEnvironment ?? (process.env.NODE_ENV === "test" ? {} : process.env),
   );
 
@@ -278,7 +362,7 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
   ): Promise<unknown> => {
     const jobStarted = performance.now();
     engineMetrics.increment("hydratrace_jobs_total");
-    progress("ACQUIRING", "Lockfile input validated");
+    progress("ACQUIRING", "Synchronous acquisition preflight completed before durable dispatch");
     progress("PARSING", "Parsing exact lockfile resolution graph");
     const result = await ingestLockfile(graphStore, {
       content: input.content,
@@ -292,20 +376,92 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
         observedAt: input.observedAt,
         ...(input.rootPackage === undefined ? {} : { rootPackage: input.rootPackage }),
       },
+      onGraphWriteStart: () => {
+        progress("WRITING_GRAPH", "Writing canonical lockfile and deployment records idempotently");
+      },
     });
-    progress("ENRICHING", "Exact package identities are ready for cached advisory enrichment");
-    progress("WRITING_GRAPH", "Canonical graph records written idempotently");
+    progress("ENRICHING", "Querying exact advisory metadata and persisting bounded scan evidence");
+    const enrichment = await enrichScan(
+      result.normalized,
+      {
+        graphStore,
+        incidentCatalog,
+        packageIntelligenceCatalog,
+        osvClient,
+        npmRegistryClient,
+        depsDevClient,
+        onExternalError: () =>
+          engineMetrics.increment("hydratrace_external_api_errors_total"),
+      },
+      {
+        enabled:
+          dependencies.scanEnrichmentEnabled ??
+          (process.env.NODE_ENV !== "test" &&
+            process.env.HYDRATRACE_SCAN_ENRICHMENT !== "false"),
+        incidentCreatedAt: input.observedAt,
+      },
+    );
     incidentCatalog.registerSnapshot(result.normalized, result.deployment);
+    const reachability = await persistScanReachability(
+      graphStore,
+      incidentCatalog,
+      input,
+      result.normalized.snapshot.id,
+    );
     engineMetrics.increment("hydratrace_packages_parsed_total", result.normalized.packages.length);
     engineMetrics.increment("hydratrace_graph_nodes_written_total", result.graphWrite.nodes.created);
     engineMetrics.increment("hydratrace_graph_edges_written_total", result.graphWrite.relationships.created);
-    progress("INDEXING", "Separate graph indexer is publishing the written generation");
-    progress("WAITING_FOR_INDEX", "Graph write is available for bounded queries");
-    progress("ANALYZING", "Snapshot is ready for incident analysis");
+    const indexer = await awaitScanIndexVisibility(
+      scanIndexerMonitor,
+      result.normalized.edges.length > 0 ? "DEPENDS_ON_INSTANCE" : undefined,
+      progress,
+    );
+    const incidentIds = [...new Set(enrichment.packages.flatMap(({ advisories }) =>
+      advisories.flatMap(({ incident }) => incident === undefined ? [] : [incident.id])))]
+      .sort((left, right) => left.localeCompare(right));
+    const analyzedIncidentIds = incidentIds.slice(0, SCAN_ANALYSIS_INCIDENT_LIMIT);
+    progress(
+      "ANALYZING",
+      analyzedIncidentIds.length === 0
+        ? "No exact advisory incidents require blast-radius traversal"
+        : `Running bounded graph blast-radius traversal for ${analyzedIncidentIds.length} incident(s)`,
+    );
+    const incidentAnalyses = [];
+    for (const incidentId of analyzedIncidentIds) {
+      const analysis = await analyzeBlastRadiusFromGraphStore(
+        graphStore,
+        incidentCatalog,
+        incidentId,
+        {
+          includeDevelopment: false,
+          pathDisplayLimit: 20,
+          pathCountLimit: 10_000,
+          limit: 100,
+        },
+        input.observedAt,
+      );
+      incidentAnalyses.push({
+        incidentId,
+        totalFindings: analysis.totalFindings,
+        totalAffectedServices: analysis.totalAffectedServices,
+        totalAffectedDeployments: analysis.totalAffectedDeployments,
+        totalPaths: analysis.totalPaths,
+        pathsTruncated: analysis.pathsTruncated,
+      });
+    }
     const output = {
       snapshot: result.normalized.snapshot,
       deployment: result.deployment,
       graphWrite: result.graphWrite,
+      enrichment,
+      reachability,
+      indexer,
+      analysis: {
+        incidentsDiscovered: incidentIds.length,
+        incidentsAnalyzed: analyzedIncidentIds.length,
+        truncated: incidentIds.length > analyzedIncidentIds.length,
+        incidents: incidentAnalyses,
+      },
       counts: {
         packageVersions: result.normalized.packages.length,
         resolutions: result.normalized.resolutions.length,
@@ -416,6 +572,39 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
   return application;
 }
 
+async function awaitScanIndexVisibility(
+  monitor: HydraDbIndexerMonitor | undefined,
+  requiredGenerationEdgeType: string | undefined,
+  progress: (stage: "INDEXING" | "WAITING_FOR_INDEX", message: string) => void,
+): Promise<{
+  provider: "HydraDB" | "in-memory-reference";
+  waited: boolean;
+  baseline?: HydraDbIndexerSnapshot;
+  visible?: HydraDbIndexerSnapshot;
+}> {
+  if (monitor === undefined) {
+    progress("INDEXING", "In-memory graph mutations are committed synchronously");
+    progress("WAITING_FOR_INDEX", "No external indexer wait is required for the in-memory reference store");
+    return { provider: "in-memory-reference", waited: false };
+  }
+
+  progress("INDEXING", "Graph mutations committed; capturing the separate indexer's cycle baseline");
+  const baseline = await monitor.probe();
+  progress(
+    "WAITING_FOR_INDEX",
+    `Waiting for a fresh healthy indexer cycle after cycle ${baseline.successfulCycles}` +
+      (requiredGenerationEdgeType === undefined
+        ? " with a published graph generation"
+        : ` with a published ${requiredGenerationEdgeType} generation`),
+  );
+  const visible = await waitForHydraDbIndexerVisibility(
+    monitor,
+    baseline,
+    requiredGenerationEdgeType,
+  );
+  return { provider: "HydraDB", waited: true, baseline, visible };
+}
+
 async function indexerStatus(adminUrl: string | undefined): Promise<Record<string, unknown>> {
   if (adminUrl === undefined || adminUrl.trim() === "") {
     return { configured: false, healthy: null, lastSuccessfulCycleAt: null };
@@ -437,6 +626,34 @@ async function indexerStatus(adminUrl: string | undefined): Promise<Record<strin
   } catch (error) {
     return { configured: true, healthy: false, lastSuccessfulCycleAt: null, error: error instanceof Error ? error.message : "Indexer status failed" };
   }
+}
+
+async function dependencyReadiness(graphStore: GraphStore): Promise<{
+  ready: boolean;
+  graph: Record<string, unknown>;
+  indexer: Record<string, unknown>;
+}> {
+  const hydraDb = graphStore instanceof HydraDbGraphStore;
+  let graphHealthy = true;
+  if (hydraDb) {
+    try {
+      await graphStore.verifyConnectivity();
+    } catch {
+      graphHealthy = false;
+    }
+  }
+  const indexer = await indexerStatus(hydraDb ? process.env.HYDRADB_INDEXER_ADMIN_URL : undefined);
+  const indexerRequired = hydraDb && indexer.configured === true;
+  const indexerHealthy = !indexerRequired || indexer.healthy === true;
+  return {
+    ready: graphHealthy && indexerHealthy,
+    graph: {
+      configured: hydraDb,
+      healthy: graphHealthy,
+      provider: hydraDb ? "HydraDB" : "in-memory-reference",
+    },
+    indexer,
+  };
 }
 
 async function seedBuiltInDemo(
@@ -533,7 +750,7 @@ async function seedBuiltInDemo(
     severityScore: 0.95,
   }, DEMO_INCIDENT_START);
   await persistIncident(graphStore, incident);
-  const blastRadius = analyzeBlastRadius(incidentCatalog, incident.id, {
+  const blastRadius = await analyzeBlastRadiusFromGraphStore(graphStore, incidentCatalog, incident.id, {
     includeDevelopment: false,
     pathDisplayLimit: 100,
     pathCountLimit: 10_000,
@@ -552,6 +769,73 @@ async function seedBuiltInDemo(
       nodesCreated: writes.reduce((sum, write) => sum + write.nodes.created, 0),
       relationshipsCreated: writes.reduce((sum, write) => sum + write.relationships.created, 0),
     },
+  };
+}
+
+async function restoreBuiltInDemoFromGraph(
+  graphStore: GraphStore,
+  incidentCatalog: IncidentCatalog,
+  packageIntelligenceCatalog: PackageIntelligenceCatalog,
+): Promise<Awaited<ReturnType<typeof seedBuiltInDemo>> | undefined> {
+  const incidentId = stableIdFromCanonicalKey([
+    "incident",
+    "compromised-helper",
+    "1.4.2",
+    "",
+    DEMO_INCIDENT_START,
+    DEMO_INCIDENT_END,
+    "",
+    "production",
+  ].join(":"));
+  const incident = await ensureIncidentCatalogHydrated(graphStore, incidentCatalog, incidentId);
+  if (incident === undefined) return undefined;
+
+  const expectedSnapshots = new Set(builtInDemoScans().map((scan) =>
+    `${scan.repositoryId}\0${scan.commitSha}`));
+  const storedSnapshots = (await graphStore.matchNodes({
+    label: "LockfileSnapshot",
+    limit: 10_000,
+  })).filter((node) => node.label === "LockfileSnapshot" && expectedSnapshots.has(
+    `${node.properties.repositoryId}\0${node.properties.commitSha}`,
+  ));
+  if (storedSnapshots.length !== expectedSnapshots.size) return undefined;
+
+  for (const snapshot of storedSnapshots) {
+    if (!(await ensureSnapshotCatalogHydrated(graphStore, incidentCatalog, snapshot.id))) {
+      return undefined;
+    }
+  }
+  await hydratePackageIntelligence(graphStore, packageIntelligenceCatalog);
+
+  const snapshots = incidentCatalog.entries()
+    .filter(({ normalized }) => expectedSnapshots.has(
+      `${normalized.snapshot.repositoryId}\0${normalized.snapshot.commitSha}`,
+    ))
+    .map(({ normalized }) => normalized.snapshot)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (snapshots.length !== expectedSnapshots.size) return undefined;
+
+  const blastRadius = await analyzeBlastRadiusFromGraphStore(
+    graphStore,
+    incidentCatalog,
+    incident.id,
+    {
+      includeDevelopment: false,
+      pathDisplayLimit: 100,
+      pathCountLimit: 10_000,
+      limit: 100,
+    },
+    incident.createdAt,
+  );
+  return {
+    status: "ready",
+    fictional: true,
+    incident,
+    blastRadius,
+    timeline: buildExposureTimeline(incidentCatalog, incident.id),
+    snapshots,
+    stats: incidentCatalog.stats(),
+    graphWrite: { nodesCreated: 0, relationshipsCreated: 0 },
   };
 }
 

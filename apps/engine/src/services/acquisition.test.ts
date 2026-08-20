@@ -42,7 +42,19 @@ describe("secure scan acquisition", () => {
   });
 
   it("pins a public GitHub scan to the resolved commit SHA", async () => {
-    const archive = zip([{ path: "repo-main/package-lock.json", content: lockfile }]);
+    const archive = zip([
+      { path: "repo-main/package-lock.json", content: lockfile },
+      { path: "repo-main/package.json", content: JSON.stringify({
+        name: "archive-app",
+        version: "1.0.0",
+        scripts: { start: "node src/server.js" },
+      }) },
+      { path: "repo-main/src/server.ts", content: 'import helper from "compromised-helper";' },
+      { path: "repo-main/src/lazy.mts", content: 'export const lazy = import("optional-adapter");' },
+      { path: "repo-main/node_modules/ignored/index.js", content: 'import "must-not-be-analyzed";' },
+      { path: "repo-main/dist/server.js", content: 'import "must-not-be-analyzed-either";' },
+      { path: "repo-main/scripts/release.sh", content: "echo never-run" },
+    ]);
     const revision = "a".repeat(40);
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({ sha: revision }), {
@@ -64,8 +76,60 @@ describe("secure scan acquisition", () => {
       repositoryId: "example/archive-app",
       commitSha: revision,
       content: lockfile,
+      staticAnalysis: {
+        origin: "archive",
+        entrypoints: ["src/server.ts"],
+        files: [
+          { path: "src/lazy.mts" },
+          { path: "src/server.ts" },
+        ],
+      },
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves precomputed static and runtime evidence while replacing stale identity", async () => {
+    const archive = zip([
+      { path: "repo/package-lock.json", content: lockfile },
+      { path: "repo/src/auto.ts", content: 'import "auto-package";' },
+    ]);
+    const acquired = await acquireScanInput({
+      mode: "zip",
+      archiveBase64: archive.toString("base64"),
+      repositoryId: "fixture/archive-app",
+      commitSha: "canonical-commit",
+      observedAt: 10,
+      staticAnalysis: {
+        snapshotId: "123",
+        repositoryId: "stale/repository",
+        commitSha: "stale-commit",
+        observedAt: 11,
+        entrypoints: ["src/precomputed.ts"],
+        files: [{ path: "src/precomputed.ts", source: 'require("fixture-package");' }],
+      },
+      runtimeTrace: {
+        snapshotId: "456",
+        runId: "fixture-run",
+        startedAt: 12,
+        command: "pnpm test",
+        kind: "test",
+        packages: [{
+          name: "fixture-package",
+          version: "1.0.0",
+          firstLoadedAt: 13,
+          loadCount: 1,
+        }],
+      },
+    });
+
+    expect(acquired.staticAnalysis).toEqual({
+      origin: "precomputed",
+      observedAt: 11,
+      entrypoints: ["src/precomputed.ts"],
+      files: [{ path: "src/precomputed.ts", source: 'require("fixture-package");' }],
+    });
+    expect(acquired.runtimeTrace).toMatchObject({ runId: "fixture-run", kind: "test" });
+    expect(acquired.runtimeTrace).not.toHaveProperty("snapshotId");
   });
 
   it("blocks non-GitHub and credential-bearing repository URLs", async () => {

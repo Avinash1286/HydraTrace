@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:zerops": "node scripts/build-zerops.mjs",
     "vercel-build": "pnpm --dir ../.. verify && pnpm --dir ../.. scan:fixture && node scripts/build-vercel.mjs"
   },
   "dependencies": {

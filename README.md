@@ -5,11 +5,12 @@ It turns exact npm lockfile topology into temporal deployment exposure, code and
 runtime reachability, explainable risk, and remediation plans that are accepted
 only after a zero-path graph verification.
 
-Production demo: <https://hydratrace.vercel.app>
+- Public application: <https://hydratrace.vercel.app>
+- Vercel fallback-engine health: <https://hydratrace-engine.vercel.app/ready>
+- Operator view: <https://hydratrace.vercel.app/system>
 
-Engine API: <https://hydratrace-engine.vercel.app>
-
-Operator status: <https://hydratrace.vercel.app/system>
+The first URL is the UI. Engine URLs are APIs, so link to `/ready` or
+`/v1/system` rather than presenting an engine's bare root as an application.
 
 ## What is implemented
 
@@ -17,25 +18,31 @@ Operator status: <https://hydratrace.vercel.app/system>
 - deterministic nonnegative 63-bit IDs and provenance on every imported fact;
 - immutable snapshots, deployments, half-open time intervals, and historical replay;
 - HydraDB v0.1.1 Bolt writes/causal reads plus lossless strong HTTP path reads;
-- exact blast radius, complete bounded paths, truncation flags, and negative controls;
-- static TypeScript reachability, CommonJS/ESM runtime evidence, and honest dynamic unknowns;
+- graph-store-backed blast radius, bounded complete paths, truncation guards, and negative controls;
+- repository/ZIP source acquisition, static JavaScript/TypeScript reachability,
+  CommonJS/ESM runtime evidence, and explicit dynamic unknowns;
+- exact-version OSV enrichment with bounded npm-registry/deps.dev context;
 - maintainer, infrastructure, and name-similarity neighborhood reasons;
 - deterministic risk components and evidence references;
-- lockfile-only, `--ignore-scripts` remediation simulation and exact/greedy set cover;
+- provider-checked, lockfile-only `--ignore-scripts` remediation simulation,
+  weighted set cover, and strong zero-path verification;
 - Markdown, JSON, and SARIF reports plus a command-line client;
-- Convex-backed scan state/events, leases, retries, incidents, and AI-run cache;
-- grounded AI with Cloudflare Workers AI, NVIDIA NIM fallback, and deterministic fallback;
+- Convex-backed scan state/events, signed dispatch, leases, retries, and cancellation;
+- grounded AI with Cloudflare Workers AI, optional NVIDIA NIM fallback, and a
+  deterministic no-credential fallback;
 - a responsive Next.js/Cytoscape incident workspace deployed on Vercel.
 
-## Run locally
+## Run locally without Docker
 
-Requirements: Node.js 24+, pnpm 10.33.0, and Docker Desktop for the live graph gate.
+Requirements: Node.js 24+ and pnpm 10.33.0. Docker is not required for this
+mode, and no API key is needed for the restorable Acme demo.
 
 ```powershell
-pnpm install
+corepack enable
+corepack prepare pnpm@10.33.0 --activate
+pnpm install --frozen-lockfile
 pnpm verify
 pnpm scan:fixture
-pnpm gate:hydradb
 pnpm start:engine
 ```
 
@@ -46,15 +53,66 @@ $env:NEXT_PUBLIC_HYDRATRACE_API_URL = "http://127.0.0.1:4100"
 pnpm dev:web
 ```
 
-`pnpm gate:hydradb` starts pinned HydraDB, indexer, and MinIO containers; proves
-idempotency and exact counts; restarts the graph node; requires one exact
-strong-consistency three-hop path; and compares every complete path for eight
-fixed-seed graph shapes against an independent reference enumerator. Stop
-without deleting data with:
+Open <http://127.0.0.1:3000>, choose **Restore Acme demo**, and use the incident,
+graph, timeline, evidence, package-neighborhood, report, and copilot views. This
+mode uses the deterministic in-memory graph store. `/ready` still reports the
+mode explicitly as `in-memory-reference`; `/health` is liveness only. Copilot
+uses its grounded deterministic template when no AI provider is configured.
+
+Normal scans may call the public OSV, npm-registry, and deps.dev APIs. Set
+`HYDRATRACE_SCAN_ENRICHMENT=false` for an offline parser/graph run; that result is
+correctly labeled `not-run`, never “no known advisories.”
+
+## Run locally with real HydraDB
+
+Docker Desktop is required only for this persistence-backed mode:
 
 ```powershell
-docker compose -f infra/local/docker-compose.yml stop
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+pnpm gate:hydradb
 ```
+
+The gate starts pinned HydraDB, indexer, and MinIO containers; proves
+idempotency and exact counts; restarts the graph node; requires one exact
+strong-consistency three-hop path; and compares every complete path for eight
+fixed-seed graph shapes against an independent reference enumerator. To make
+the engine's readiness check include the local indexer, add this to `.env`:
+
+```text
+HYDRADB_INDEXER_ADMIN_URL=http://127.0.0.1:9091
+```
+
+Then start the same engine and web commands shown above. In HydraDB mode,
+`GET /ready` returns `503` unless the graph connection succeeds and the
+configured separate indexer is healthy. Stop the containers without deleting
+the persisted graph:
+
+```powershell
+docker compose -f .\infra\local\docker-compose.yml stop
+```
+
+## Input and verification boundaries
+
+- Repository acquisition accepts only canonical public `https://github.com/owner/repo`
+  URLs. ZIP/repository archives are capped at 4 MB compressed and inspected in
+  memory; repository or package scripts are never run.
+- Repository and ZIP scans can infer entrypoints and analyze bounded JavaScript
+  and TypeScript source. A lockfile-only upload has no source reachability unless
+  a static-analysis document or runtime trace is supplied.
+- OSV exact package/version queries establish advisory matches. npm metadata and
+  deps.dev are supplemental and cannot turn an OSV failure into a safe result.
+- Automatic remediation currently supports npm `package-lock.json`. It requires
+  the exact `package.json` and matching lockfile for every affected snapshot,
+  refuses provider uncertainty, and runs as a non-root process with scripts disabled.
+- The explicitly fictional restore uses a separate, hash-pinned
+  `built-in-fictional-fixture` candidate set and cached simulation. It never
+  claims those demonstration versions exist in npm or OSV.
+- `LOCKFILE_VERIFIED` means the regenerated lockfile contains no affected path.
+  Overall `VERIFIED` additionally requires fixed snapshots for every covered
+  service and a strong HydraDB query returning zero remaining paths.
+
+See [Security](docs/security.md) for the enforced bounds and
+[Implementation status](docs/implementation-status.md) for current live-gate status.
 
 ## Useful commands
 
@@ -69,9 +127,23 @@ docker compose -f infra/local/docker-compose.yml stop
 | `pnpm exec convex dev --once` | Validate and push the development control plane |
 | `pnpm exec convex deploy --yes` | Push the production Convex deployment |
 
+## Hosting decision
+
+The implementation deliberately varies from `plan.md` in two approved ways:
+
+1. The public web application is on Vercel, with a stateless Vercel engine kept
+   as a fallback. The durable graph-backed engine belongs beside HydraDB in Zerops.
+2. There are no GitHub Actions. Verification runs locally and in the Vercel
+   build/deploy path; the CLI remains available for operator-controlled CI.
+
+Raw HydraDB Bolt/HTTP/admin ports and object storage stay private. Vercel never
+connects to a publicly exposed Bolt port. See [Deployment](docs/deployment.md)
+and [Vercel notes](docs/vercel.md) for the exact topology and environment matrix.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Implementation status](docs/implementation-status.md)
 - [Correctness gates](docs/correctness.md)
 - [Acceptance audit](docs/acceptance.md)
 - [Graph model](docs/graph-model.md)
@@ -79,17 +151,10 @@ docker compose -f infra/local/docker-compose.yml stop
 - [Benchmarks](docs/benchmarks.md)
 - [Security](docs/security.md)
 - [Deployment](docs/deployment.md)
+- [Three-minute demo](docs/demo-script.md)
 - [Attribution](docs/attribution.md)
-
-## Deployment boundary
-
-The public Vercel engine is a stateless compute/demo layer. Convex durably stores
-scan orchestration, but graph persistence remains authoritative only in the
-local or private Zerops HydraDB deployment. Raw Bolt must not be exposed to the
-public internet to connect Vercel. See `docs/deployment.md` for the remaining
-account-owned Cloudflare and Zerops activation steps.
 
 ## License
 
-Original HydraTrace application code is Apache-2.0 licensed. Dependencies retain
-their own licenses; see `docs/attribution.md`.
+Original HydraTrace application code is Apache-2.0 licensed. HydraDB and every
+other dependency retain their own licenses; see [Attribution](docs/attribution.md).

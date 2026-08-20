@@ -46,7 +46,9 @@ export default defineSchema({
     currentStage: v.optional(v.string()),
     progress: v.optional(v.number()),
     lastHeartbeatAt: v.optional(v.number()),
-  }).index("by_stable_id", ["stableId"]).index("by_idempotency", ["idempotencyKey"]),
+  }).index("by_stable_id", ["stableId"])
+    .index("by_idempotency", ["idempotencyKey"])
+    .index("by_upload", ["uploadId"]),
   scanEvents: defineTable({
     scanId: v.id("scans"),
     sequence: v.number(),

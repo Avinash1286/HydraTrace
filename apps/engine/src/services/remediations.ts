@@ -1,11 +1,11 @@
 import {
+  normalizeNpmPackageName,
   stableIdFromCanonicalKey,
   type StableId,
 } from "@hydratrace/domain";
 import type { GraphStore } from "@hydratrace/hydradb-client";
 import type { GraphNodeRecord } from "@hydratrace/graph-schema";
 import {
-  analyzeBlastRadius,
   type IncidentCatalog,
 } from "@hydratrace/incident-analysis";
 import {
@@ -17,9 +17,16 @@ import {
 } from "@hydratrace/remediation";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { analyzeBlastRadiusFromGraphStore } from "./graph-catalog.js";
+import {
+  discoverBuiltInDemoRemediationCandidates,
+  discoverRemediationCandidates,
+  type RemediationCandidateDiscoveryDependencies,
+} from "./remediation-candidates.js";
 
 const stableIdSchema = z.string().regex(/^\d+$/);
 const candidateSchema = z.object({
+  candidateId: stableIdSchema.optional(),
   dependencyName: z.string().trim().min(1).max(214),
   fromVersion: z.string().trim().min(1).max(128),
   toVersion: z.string().trim().min(1).max(128),
@@ -34,6 +41,19 @@ const candidateSchema = z.object({
 }).strict();
 
 const createSchema = z.object({ candidates: z.array(candidateSchema).min(1).max(100).optional() }).strict();
+const discoverySchema = z.object({
+  artifacts: z.array(z.object({
+    snapshotId: stableIdSchema,
+    packageJson: z.string().min(1).max(1_000_000),
+    packageLock: z.string().min(1).max(5_000_000),
+    repositoryId: z.string().trim().min(1).max(512),
+    commitSha: z.string().trim().min(1).max(256),
+  }).strict()).min(1).max(25),
+  requestedVersions: z.record(z.string().trim().min(1).max(214), z.array(z.string().trim().min(1).max(128)).min(1).max(10)).optional(),
+  maxVersionsPerDependency: z.number().int().min(1).max(10).optional(),
+  maxSimulations: z.number().int().min(1).max(25).optional(),
+  simulationTimeoutMs: z.number().int().min(1_000).max(60_000).optional(),
+}).strict();
 const runParameters = z.object({ runId: stableIdSchema });
 const incidentParameters = z.object({ incidentId: stableIdSchema });
 const verifySchema = z.object({
@@ -78,17 +98,102 @@ export function registerRemediationRoutes(
   catalog: IncidentCatalog,
   graphStore: GraphStore,
   strongGraphReads: boolean,
+  discoveryDependencies?: RemediationCandidateDiscoveryDependencies,
 ): void {
   const runs = new Map<StableId, RemediationRun>();
+  const discoveredCandidates = new Map<StableId, Map<StableId, RemediationCandidate>>();
 
   application.get("/v1/incidents/:incidentId/remediations/candidates", async (request, reply) => {
     const parameters = incidentParameters.safeParse(request.params);
     if (!parameters.success) return reply.code(400).send({ error: "INVALID_INCIDENT_ID" });
     const incidentId = parameters.data.incidentId as StableId;
-    if (catalog.getIncident(incidentId) === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
-    const blast = completeBlast(catalog, incidentId);
+    const incident = catalog.getIncident(incidentId);
+    if (incident === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
+    const blast = await completeBlast(graphStore, catalog, incidentId);
     if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED" });
-    return { incidentId, candidates: generateCandidates(blast) };
+    const cachedDemo = discoverBuiltInDemoRemediationCandidates(blast, incident);
+    if (cachedDemo !== undefined) {
+      const stored = discoveredCandidates.get(incidentId) ?? new Map<StableId, RemediationCandidate>();
+      for (const candidate of cachedDemo.candidates) stored.set(candidate.candidateId, structuredClone(candidate));
+      discoveredCandidates.set(incidentId, stored);
+      return { incidentId, ...cachedDemo };
+    }
+    return {
+      incidentId,
+      state: "INCONCLUSIVE",
+      complete: false,
+      candidates: [],
+      evidence: [],
+      rejections: [{
+        reason: "SOURCE_ARTIFACT_UNAVAILABLE",
+        message: "POST the exact package.json and package-lock.json artifacts to this endpoint before requesting an automatic recommendation.",
+      }],
+      providerErrors: [],
+      simulationsAttempted: 0,
+    };
+  });
+
+  application.post("/v1/incidents/:incidentId/remediations/candidates", async (request, reply) => {
+    const parameters = incidentParameters.safeParse(request.params);
+    const parsed = discoverySchema.safeParse(request.body);
+    if (!parameters.success || !parsed.success) {
+      return reply.code(400).send({ error: "INVALID_CANDIDATE_DISCOVERY" });
+    }
+    const incidentId = parameters.data.incidentId as StableId;
+    const incident = catalog.getIncident(incidentId);
+    if (incident === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
+    const blast = await completeBlast(graphStore, catalog, incidentId);
+    if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED" });
+    if (discoveryDependencies === undefined) {
+      return {
+        incidentId,
+        state: "INCONCLUSIVE",
+        complete: false,
+        candidates: [],
+        evidence: [],
+        rejections: [],
+        providerErrors: [{ provider: "npm-registry", message: "Remediation discovery providers are not configured." }],
+        simulationsAttempted: 0,
+      };
+    }
+    if (
+      typeof process.getuid === "function" &&
+      process.getuid() === 0 &&
+      discoveryDependencies.allowRootSimulation !== true
+    ) {
+      return {
+        incidentId,
+        state: "INCONCLUSIVE",
+        complete: false,
+        candidates: [],
+        evidence: [],
+        rejections: [],
+        providerErrors: [{
+          provider: "lockfile-simulation",
+          message: "Lockfile simulations must run as a non-root user.",
+        }],
+        simulationsAttempted: 0,
+      };
+    }
+    const result = await discoverRemediationCandidates(
+      blast,
+      incident,
+      parsed.data.artifacts.map((artifact) => ({
+        ...artifact,
+        snapshotId: artifact.snapshotId as StableId,
+      })),
+      discoveryDependencies,
+      {
+        ...(parsed.data.requestedVersions === undefined ? {} : { requestedVersions: parsed.data.requestedVersions }),
+        ...(parsed.data.maxVersionsPerDependency === undefined ? {} : { maxVersionsPerDependency: parsed.data.maxVersionsPerDependency }),
+        ...(parsed.data.maxSimulations === undefined ? {} : { maxSimulations: parsed.data.maxSimulations }),
+        ...(parsed.data.simulationTimeoutMs === undefined ? {} : { simulationTimeoutMs: parsed.data.simulationTimeoutMs }),
+      },
+    );
+    const stored = discoveredCandidates.get(incidentId) ?? new Map<StableId, RemediationCandidate>();
+    for (const candidate of result.candidates) stored.set(candidate.candidateId, structuredClone(candidate));
+    discoveredCandidates.set(incidentId, stored);
+    return { incidentId, ...result };
   });
 
   application.post("/v1/remediations/simulate", async (request, reply) => {
@@ -120,12 +225,18 @@ export function registerRemediationRoutes(
     if (!parameters.success || !parsed.success) return reply.code(400).send({ error: "INVALID_REMEDIATION" });
     const incidentId = parameters.data.incidentId as StableId;
     if (catalog.getIncident(incidentId) === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
-    const blast = completeBlast(catalog, incidentId);
+    const blast = await completeBlast(graphStore, catalog, incidentId);
     if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED", message: "Remediation cannot solve an incomplete path set" });
     const beforePathIds = [...new Set(blast.findings.flatMap(({ displayedPaths }) => displayedPaths.map(({ pathId }) => pathId)))].sort();
+    const safeCandidates = discoveredCandidates.get(incidentId) ?? new Map<StableId, RemediationCandidate>();
     const candidates = parsed.data.candidates === undefined
-      ? generateCandidates(blast)
-      : parsed.data.candidates.map(toCandidate);
+      ? [...safeCandidates.values()].map((candidate) => structuredClone(candidate))
+      : parsed.data.candidates.map((input) => {
+          const stored = input.candidateId === undefined
+            ? undefined
+            : safeCandidates.get(input.candidateId as StableId);
+          return stored === undefined ? toUnverifiedCandidate(input) : structuredClone(stored);
+        });
     const solution = solveRemediation(beforePathIds, candidates);
     const createdAt = Date.now();
     const runId = stableIdFromCanonicalKey(`remediation-run:${incidentId}:${createdAt}:${candidates.map(({ candidateId }) => candidateId).join(",")}`);
@@ -163,17 +274,55 @@ export function registerRemediationRoutes(
     const runId = parameters.data.runId as StableId; const run = await getRun(graphStore, runs, runId); if (run === undefined) return reply.code(404).send({ error: "REMEDIATION_NOT_FOUND" });
     try {
       const snapshotIds = [...new Set((parsed.data.snapshotIds ?? (parsed.data.snapshotId === undefined ? [] : [parsed.data.snapshotId])) as StableId[])];
-      const coveredServices = new Set<string>();
+      const coveredDeployments = new Set<string>();
+      const coveredChanges = new Set<string>();
       let remainingPathCount = 0;
       for (const snapshotId of snapshotIds) {
         const entry = catalog.entry(snapshotId);
         if (entry === undefined) throw new Error(`Verification snapshot ${snapshotId} was not found`);
-        for (const deployment of entry.deployments) coveredServices.add(deployment.serviceId);
-        remainingPathCount += await countStrongGraphPaths(graphStore, catalog, run.incidentId, snapshotId);
+        const inspection = await inspectStrongGraphSnapshot(graphStore, catalog, run.incidentId, snapshotId);
+        for (const deployment of entry.deployments) {
+          if (deployment.endedAt === null) {
+            const key = deploymentKey(
+              entry.normalized.snapshot.repositoryId,
+              deployment.serviceId,
+              deployment.environment,
+            );
+            coveredDeployments.add(key);
+            for (const resolution of inspection.directResolutions) {
+              coveredChanges.add(changeKey(key, resolution.packageName, resolution.version));
+            }
+          }
+        }
+        remainingPathCount += inspection.pathCount;
       }
-      const requiredServices = new Set(run.solution.candidates.flatMap(({ candidate }) => candidate.affectedServices));
-      const missingServices = [...requiredServices].filter((service) => !coveredServices.has(service));
-      const passed = strongGraphReads && remainingPathCount === 0 && missingServices.length === 0;
+      const coveredPathIds = new Set(run.solution.coveredPathIds);
+      const originalBlast = await completeBlast(graphStore, catalog, run.incidentId);
+      if (originalBlast.pathsTruncated) {
+        throw new Error("Original incident paths are truncated; refusing incomplete verification coverage");
+      }
+      const requiredDeployments = new Set(originalBlast.findings
+        .filter(({ displayedPaths }) => displayedPaths.some(({ pathId }) => coveredPathIds.has(pathId)))
+        .map(({ repositoryId, serviceId, environment }) => deploymentKey(repositoryId, serviceId, environment)));
+      if (run.solution.candidates.length > 0 && requiredDeployments.size === 0) {
+        throw new Error("Original incident deployment evidence is unavailable for verification");
+      }
+      const requiredChanges = new Set<string>();
+      for (const { candidate } of run.solution.candidates) {
+        const candidatePaths = new Set(candidate.eliminatedPathIds);
+        for (const finding of originalBlast.findings) {
+          if (!finding.displayedPaths.some(({ pathId }) => candidatePaths.has(pathId))) continue;
+          requiredChanges.add(changeKey(
+            deploymentKey(finding.repositoryId, finding.serviceId, finding.environment),
+            candidate.dependencyName,
+            candidate.toVersion,
+          ));
+        }
+      }
+      const missingDeployments = [...requiredDeployments].filter((deployment) => !coveredDeployments.has(deployment));
+      const missingChanges = [...requiredChanges].filter((change) => !coveredChanges.has(change));
+      const completePlan = run.solution.candidates.length > 0 && run.solution.uncoveredPathIds.length === 0;
+      const passed = strongGraphReads && completePlan && remainingPathCount === 0 && missingDeployments.length === 0 && missingChanges.length === 0;
       const verification: RemediationRun["verification"] = {
         level: strongGraphReads ? "STRONG_GRAPH" : "REFERENCE_GRAPH",
         ...(snapshotIds.length === 1 ? { snapshotId: snapshotIds[0]! } : {}),
@@ -182,8 +331,12 @@ export function registerRemediationRoutes(
         passed,
         message: passed
           ? "Strong-consistency graph queries returned zero affected paths for every covered service."
-          : missingServices.length > 0
-            ? `Verification is missing fixed snapshots for: ${missingServices.join(", ")}.`
+          : !completePlan
+            ? "Strong verification cannot pass because the recommendation contains no fully simulated plan covering every incident path."
+            : missingDeployments.length > 0
+            ? `Verification is missing active fixed snapshots for: ${missingDeployments.map(displayDeploymentKey).join(", ")}.`
+            : missingChanges.length > 0
+              ? `Fixed snapshots do not contain the recommended direct upgrades: ${missingChanges.map(displayChangeKey).join(", ")}.`
             : remainingPathCount > 0
               ? `Verification found ${remainingPathCount} affected path(s).`
               : "Zero paths were found, but the store is not configured for strong consistency; verification remains inconclusive.",
@@ -299,72 +452,90 @@ async function getRun(
   return run;
 }
 
-function completeBlast(catalog: IncidentCatalog, incidentId: StableId) {
-  return analyzeBlastRadius(catalog, incidentId, {
-    includeDevelopment: true,
+function completeBlast(graphStore: GraphStore, catalog: IncidentCatalog, incidentId: StableId) {
+  return analyzeBlastRadiusFromGraphStore(graphStore, catalog, incidentId, {
+    includeDevelopment: false,
     pathDisplayLimit: 100,
     pathCountLimit: 10_000,
     limit: 100,
   });
 }
 
-function generateCandidates(blast: ReturnType<typeof analyzeBlastRadius>): RemediationCandidate[] {
-  const candidates = new Map<string, {
-    dependencyName: string;
-    fromVersion: string;
-    eliminatedPathIds: Set<StableId>;
-    affectedServices: Set<string>;
-    evidenceRefs: Set<string>;
-  }>();
-  for (const finding of blast.findings) {
-    for (const path of finding.displayedPaths) {
-      const direct = path.nodes.find((node, index) => index > 0 && node.direct) ?? path.nodes[1] ?? path.nodes[0];
-      if (direct === undefined) continue;
-      const key = `${direct.packageName}\0${direct.version}`;
-      const candidate = candidates.get(key) ?? {
-        dependencyName: direct.packageName,
-        fromVersion: direct.version,
-        eliminatedPathIds: new Set<StableId>(),
-        affectedServices: new Set<string>(),
-        evidenceRefs: new Set<string>(),
-      };
-      candidate.eliminatedPathIds.add(path.pathId);
-      candidate.affectedServices.add(finding.serviceId);
-      for (const evidenceRef of path.evidenceRefs) candidate.evidenceRefs.add(evidenceRef);
-      candidates.set(key, candidate);
-    }
-  }
-  return [...candidates.values()].map((candidate) => remediationCandidate({
-    dependencyName: candidate.dependencyName,
-    fromVersion: candidate.fromVersion,
-    toVersion: nextPatch(candidate.fromVersion),
-    semverImpact: "patch",
-    eliminatedPathIds: [...candidate.eliminatedPathIds].sort(),
-    affectedServices: [...candidate.affectedServices].sort(),
-    lockfileChurn: 0,
-    deprecated: false,
-    knownVulnerable: false,
-    verification: "PROPOSED",
-    evidenceRefs: [...candidate.evidenceRefs].sort(),
-  }));
+function toUnverifiedCandidate(input: z.infer<typeof candidateSchema>): RemediationCandidate {
+  return remediationCandidate({ dependencyName: input.dependencyName, fromVersion: input.fromVersion, toVersion: input.toVersion, semverImpact: input.semverImpact, eliminatedPathIds: input.eliminatedPathIds as StableId[], affectedServices: input.affectedServices, lockfileChurn: input.lockfileChurn, deprecated: input.deprecated, knownVulnerable: input.knownVulnerable, verification: "PROPOSED", evidenceRefs: input.evidenceRefs });
 }
 
-function nextPatch(version: string): string {
-  const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/u.exec(version);
-  return match === null ? version : `${match[1]}.${match[2]}.${Number(match[3]) + 1}${match[4] ?? ""}`;
+function deploymentKey(repositoryId: string, serviceId: string, environment: string): string {
+  return `${repositoryId}\0${serviceId}\0${environment}`;
 }
 
-function toCandidate(input: z.infer<typeof candidateSchema>): RemediationCandidate {
-  return remediationCandidate({ dependencyName: input.dependencyName, fromVersion: input.fromVersion, toVersion: input.toVersion, semverImpact: input.semverImpact, eliminatedPathIds: input.eliminatedPathIds as StableId[], affectedServices: input.affectedServices, lockfileChurn: input.lockfileChurn, deprecated: input.deprecated, knownVulnerable: input.knownVulnerable, verification: input.verification, evidenceRefs: input.evidenceRefs });
+function displayDeploymentKey(key: string): string {
+  return key.split("\0").join("/");
 }
 
-async function countStrongGraphPaths(store: GraphStore, catalog: IncidentCatalog, incidentId: StableId, snapshotId: StableId): Promise<number> {
+function changeKey(deployment: string, dependencyName: string, version: string): string {
+  return `${deployment}\0${normalizeNpmPackageName(dependencyName)}\0${version}`;
+}
+
+function displayChangeKey(key: string): string {
+  const parts = key.split("\0");
+  return `${parts.slice(0, 3).join("/")}:${parts[3] ?? "unknown"}@${parts[4] ?? "unknown"}`;
+}
+
+async function inspectStrongGraphSnapshot(store: GraphStore, catalog: IncidentCatalog, incidentId: StableId, snapshotId: StableId): Promise<{
+  pathCount: number;
+  directResolutions: Array<{ packageName: string; version: string }>;
+}> {
   const incident = catalog.getIncident(incidentId); if (incident === undefined) throw new Error("Incident was not found");
   const entry = catalog.entry(snapshotId); if (entry === undefined) throw new Error("Verification snapshot was not found");
-  const snapshotNode = await store.getNodes([snapshotId]); if (snapshotNode.length !== 1) throw new Error("Verification snapshot is not present in the graph store");
-  const affectedVersionIds = new Set(entry.normalized.packages.filter(({ normalizedName, version }) => normalizedName === incident.normalizedPackageName && incident.affectedVersions.includes(version)).map(({ id }) => id));
-  const targets = entry.normalized.resolutions.filter(({ packageVersionId }) => affectedVersionIds.has(packageVersionId));
-  const roots = entry.normalized.resolutions.filter(({ root }) => root); let count = 0;
-  for (const root of roots) for (const target of targets) count += (await store.findPaths({ from: { label: "Resolution", id: root.id }, to: { label: "Resolution", id: target.id }, relationshipType: "DEPENDS_ON_INSTANCE", direction: "out", minDepth: 0, maxDepth: 16, limit: 10_000 })).length;
-  return count;
+  const snapshotNode = (await store.getNodes([snapshotId])).find(
+    (node): node is GraphNodeRecord<"LockfileSnapshot"> => node.label === "LockfileSnapshot",
+  );
+  if (snapshotNode === undefined) throw new Error("Verification snapshot is not present in the graph store");
+  const contains = await store.matchRelationships({
+    type: "CONTAINS",
+    from: { id: snapshotId, label: "LockfileSnapshot" },
+    limit: 10_000,
+  });
+  if (contains.length >= 10_000) {
+    throw new Error("Verification snapshot reached the 10000-resolution query cap; refusing an incomplete zero-path result");
+  }
+  const resolutionIds = [...new Set(contains.map(({ to }) => to.id))];
+  const resolutions = (await store.getNodes(resolutionIds)).filter(
+    (node): node is GraphNodeRecord<"Resolution"> => node.label === "Resolution",
+  );
+  if (resolutions.length !== resolutionIds.length) {
+    throw new Error("Verification snapshot contains missing or mislabeled resolution nodes");
+  }
+  const targets = resolutions.filter(({ properties }) =>
+    normalizeNpmPackageName(properties.packageName) === incident.normalizedPackageName &&
+    incident.affectedVersions.includes(properties.version));
+  const roots = resolutions.filter(({ properties }) => properties.root);
+  if (roots.length === 0) {
+    throw new Error("Verification snapshot has no graph root resolution");
+  }
+  let count = 0;
+  for (const root of roots) {
+    for (const target of targets) {
+      const paths = await store.findPaths({
+        from: { label: "Resolution", id: root.id },
+        to: { label: "Resolution", id: target.id },
+        relationshipType: "DEPENDS_ON_INSTANCE",
+        direction: "out",
+        minDepth: 0,
+        maxDepth: 16,
+        limit: 10_000,
+      });
+      if (paths.length >= 10_000) {
+        throw new Error("Strong verification reached the 10000-path cap; refusing an incomplete result");
+      }
+      count += paths.length;
+    }
+  }
+  return {
+    pathCount: count,
+    directResolutions: resolutions
+      .filter(({ properties }) => properties.direct)
+      .map(({ properties }) => ({ packageName: properties.packageName, version: properties.version })),
+  };
 }
