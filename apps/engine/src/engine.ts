@@ -67,6 +67,7 @@ export interface EngineDependencies {
   packageIntelligenceCatalog?: PackageIntelligenceCatalog;
   strongGraphReads?: boolean;
   convexUrl?: string;
+  aiEnvironment?: NodeJS.ProcessEnv;
   jobSharedSecret?: string;
 }
 
@@ -219,7 +220,11 @@ export function buildEngine(dependencies: EngineDependencies = {}): FastifyInsta
     dependencies.strongGraphReads ??
       (graphStore instanceof HydraDbGraphStore && process.env.HYDRADB_CONSISTENCY === "strong"),
   );
-  registerAiRoutes(application, incidentCatalog);
+  registerAiRoutes(
+    application,
+    incidentCatalog,
+    dependencies.aiEnvironment ?? (process.env.NODE_ENV === "test" ? {} : process.env),
+  );
 
   application.post("/v1/scans/lockfile", async (request, reply) => {
     const parsed = scanBodySchema.safeParse(request.body);
