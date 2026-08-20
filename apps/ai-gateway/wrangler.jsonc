@@ -1,5 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "59b8589f738de5e4ab643bedd3a4b0a9",
   "name": "hydratrace-ai-gateway",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-16",

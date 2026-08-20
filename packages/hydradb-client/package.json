@@ -12,6 +12,6 @@
   "dependencies": {
     "@hydratrace/domain": "workspace:*",
     "@hydratrace/graph-schema": "workspace:*",
-    "neo4j-driver": "6.2.0"
+    "neo4j-driver": "5.27.0"
   }
 }

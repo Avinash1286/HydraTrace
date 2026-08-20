@@ -118,27 +118,79 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
     expect(isInt(call?.parameters.resultLimit)).toBe(true);
   });
 
-  it("uses the strong HTTP path API without losing 63-bit IDs", async () => {
-    const fixture = createHydraDbSmokeFixture();
-    const body = JSON.stringify({
-      rows: [[{
-        type: "path",
-        value: {
-          nodes: fixture.expectedNodeIds.map((id) => ({ id: `__${id}__` })),
-          relationships: fixture.expectedRelationshipIds.map((id) => ({
-            properties: { hydratraceStableId: { Integer: `__${id}__` } },
-          })),
+  it.each(["causal", "strong"] as const)(
+    "uses the %s HTTP path API without losing 63-bit IDs",
+    async (consistency) => {
+      const fixture = createHydraDbSmokeFixture();
+      const request = vi.fn(
+        async (_input: string | URL | Request, _init?: RequestInit) =>
+          ndjsonResponse([
+            { type: "header", query_id: "path-1", columns: ["path"], read_epoch: 8 },
+            {
+              type: "row",
+              values: [{
+                type: "path",
+                value: {
+                  nodes: fixture.expectedNodeIds.map((id) => ({ id: rawInteger(id) })),
+                  relationships: fixture.expectedRelationshipIds.map((id) => ({
+                    properties: {
+                      hydratraceStableId: { Integer: rawInteger(id) },
+                    },
+                  })),
+                },
+              }],
+            },
+            { type: "summary", bookmark: null, has_more: false },
+          ]),
+      );
+      vi.stubGlobal("fetch", request);
+      const captured: CapturedQuery[] = [];
+      const store = new HydraDbGraphStore(fakeDriver(captured), {
+        consistency,
+        strongHttp: {
+          url: "http://hydradb.test:8443",
+          authToken: "test-token",
+          namespace: "development",
         },
-      }]],
-    }).replace(/"__(\d+)__"/gu, "$1");
+      });
+
+      const paths = await store.findPaths({
+        from: { id: fixture.expectedNodeIds[0]!, label: "Resolution" },
+        to: { id: fixture.expectedNodeIds[3]!, label: "Resolution" },
+        relationshipType: "DEPENDS_ON_INSTANCE",
+        minDepth: 3,
+        maxDepth: 3,
+        limit: 2,
+      });
+
+      expect(paths).toEqual([{
+        nodeIds: fixture.expectedPath,
+        relationshipIds: fixture.expectedRelationshipIds,
+      }]);
+      expect(captured).toHaveLength(0);
+      expect(request).toHaveBeenCalledOnce();
+      const init = request.mock.calls[0]?.[1];
+      const requestBody = String(init?.body);
+      expect(new Headers(init?.headers).get("accept")).toBe("application/x-ndjson");
+      expect(requestBody).toContain(`"consistency":"${consistency}"`);
+      expect(requestBody).toContain(`"source":${fixture.expectedNodeIds[0]}`);
+      expect(requestBody).not.toContain(
+        `"source":"${fixture.expectedNodeIds[0]}"`,
+      );
+    },
+  );
+
+  it("rejects a truncated HTTP path stream without a terminal summary", async () => {
+    const fixture = createHydraDbSmokeFixture();
     const request = vi.fn(
       async (_input: string | URL | Request, _init?: RequestInit) =>
-        new Response(body),
+        ndjsonResponse([
+          { type: "header", query_id: "truncated-1", columns: ["path"], read_epoch: 9 },
+        ]),
     );
     vi.stubGlobal("fetch", request);
     const captured: CapturedQuery[] = [];
     const store = new HydraDbGraphStore(fakeDriver(captured), {
-      consistency: "strong",
       strongHttp: {
         url: "http://hydradb.test:8443",
         authToken: "test-token",
@@ -146,26 +198,169 @@ describe("HydraDbGraphStore v0.1.1 compatibility", () => {
       },
     });
 
-    const paths = await store.findPaths({
+    await expect(store.findPaths({
       from: { id: fixture.expectedNodeIds[0]!, label: "Resolution" },
       to: { id: fixture.expectedNodeIds[3]!, label: "Resolution" },
       relationshipType: "DEPENDS_ON_INSTANCE",
       minDepth: 3,
       maxDepth: 3,
       limit: 2,
-    });
-
-    expect(paths).toEqual([{
-      nodeIds: fixture.expectedPath,
-      relationshipIds: fixture.expectedRelationshipIds,
-    }]);
+    })).rejects.toThrow(/without a terminal summary.*possibly truncated/u);
     expect(captured).toHaveLength(0);
-    expect(request).toHaveBeenCalledOnce();
-    expect(String(request.mock.calls[0]?.[1]?.body)).toContain(
-      '"consistency":"strong"',
-    );
+  });
+
+  it("serializes concurrent match/get reads across Bolt sessions", async () => {
+    const firstRunStarted = deferred();
+    const releaseFirstRun = deferred();
+    const state = boltConcurrencyState();
+    const store = new HydraDbGraphStore(instrumentedDriver(
+      state,
+      async (call) => {
+        if (call === 1) {
+          firstRunStarted.resolve();
+          await releaseFirstRun.promise;
+        }
+        return emptyQueryResult();
+      },
+    ));
+    const fixture = createHydraDbSmokeFixture();
+
+    const reads = Promise.all([
+      store.matchNodes({ label: "Organization", limit: 1 }),
+      store.getNodes([fixture.expectedNodeIds[0]!]),
+    ]);
+    await firstRunStarted.promise;
+    await Promise.resolve();
+    const callsWhileFirstRunWasBlocked = state.runCalls;
+    releaseFirstRun.resolve();
+
+    await expect(reads).resolves.toEqual([[], []]);
+    expect(callsWhileFirstRunWasBlocked).toBe(1);
+    expect(state.runCalls).toBeGreaterThan(1);
+    expect(state.maxActiveRuns).toBe(1);
+    expect(state.maxActiveSessions).toBe(1);
+    expect(state.activeRuns).toBe(0);
+    expect(state.activeSessions).toBe(0);
+    expect(state.closes).toBe(state.sessions);
+  });
+
+  it("releases the Bolt serialization queue after a query failure", async () => {
+    const firstRunStarted = deferred();
+    const releaseFirstRun = deferred();
+    const state = boltConcurrencyState();
+    const store = new HydraDbGraphStore(instrumentedDriver(
+      state,
+      async (call) => {
+        if (call === 1) {
+          firstRunStarted.resolve();
+          await releaseFirstRun.promise;
+          throw new Error("planned Bolt failure");
+        }
+        return emptyQueryResult();
+      },
+    ));
+
+    const failedRead = store.matchNodes({ label: "Organization", limit: 1 });
+    const failure = expect(failedRead).rejects.toThrow("planned Bolt failure");
+    const nextRead = store.matchNodes({ label: "Environment", limit: 1 });
+    await firstRunStarted.promise;
+    await Promise.resolve();
+    const callsWhileFirstRunWasBlocked = state.runCalls;
+    releaseFirstRun.resolve();
+
+    await failure;
+    await expect(nextRead).resolves.toEqual([]);
+    expect(callsWhileFirstRunWasBlocked).toBe(1);
+    expect(state.runCalls).toBe(2);
+    expect(state.maxActiveRuns).toBe(1);
+    expect(state.maxActiveSessions).toBe(1);
+    expect(state.closes).toBe(2);
   });
 });
+
+interface BoltConcurrencyState {
+  runCalls: number;
+  activeRuns: number;
+  maxActiveRuns: number;
+  sessions: number;
+  activeSessions: number;
+  maxActiveSessions: number;
+  closes: number;
+}
+
+function boltConcurrencyState(): BoltConcurrencyState {
+  return {
+    runCalls: 0,
+    activeRuns: 0,
+    maxActiveRuns: 0,
+    sessions: 0,
+    activeSessions: 0,
+    maxActiveSessions: 0,
+    closes: 0,
+  };
+}
+
+function instrumentedDriver(
+  state: BoltConcurrencyState,
+  execute: (call: number) => Promise<QueryResult>,
+): Driver {
+  return {
+    verifyConnectivity: async () => undefined,
+    close: async () => undefined,
+    session: () => {
+      state.sessions += 1;
+      state.activeSessions += 1;
+      state.maxActiveSessions = Math.max(
+        state.maxActiveSessions,
+        state.activeSessions,
+      );
+      let closed = false;
+      return {
+        run: async (): Promise<QueryResult> => {
+          state.runCalls += 1;
+          const call = state.runCalls;
+          state.activeRuns += 1;
+          state.maxActiveRuns = Math.max(state.maxActiveRuns, state.activeRuns);
+          try {
+            return await execute(call);
+          } finally {
+            state.activeRuns -= 1;
+          }
+        },
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          state.closes += 1;
+          state.activeSessions -= 1;
+        },
+      };
+    },
+  } as unknown as Driver;
+}
+
+function emptyQueryResult(): QueryResult {
+  return { records: [] } as unknown as QueryResult;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function rawInteger(value: string): string {
+  return `__RAW_INTEGER_${value}__`;
+}
+
+function ndjsonResponse(lines: readonly unknown[]): Response {
+  const body = `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`
+    .replace(/"__RAW_INTEGER_(-?\d+)__"/gu, "$1");
+  return new Response(body, {
+    headers: { "content-type": "application/x-ndjson; charset=utf-8" },
+  });
+}
 
 function fakeDriver(
   captured: CapturedQuery[],

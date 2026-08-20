@@ -8,7 +8,7 @@ Browser
        -> Zerops public engine
             -> private HydraDB node
             -> private HydraDB indexer
-            -> private Zerops Object Storage
+            -> private Cloudflare R2 bucket
             -> Convex durable scheduler
             -> authenticated Cloudflare AI gateway
 
@@ -21,12 +21,22 @@ Active service inventory:
 - Web: <https://hydratrace.vercel.app>
 - Vercel fallback-engine health: <https://hydratrace-engine.vercel.app/ready>
 - Convex production: `https://accomplished-skunk-643.convex.cloud`
-- Cloudflare gateway: `https://hydratrace-ai-gateway.abinashyadav3-141.workers.dev`
-- Zerops engine: record the final `/ready` URL in the production-gate evidence
+- Cloudflare gateway: `https://hydratrace-ai-gateway.hydratrace-ai-gateway.workers.dev`
+- Cloudflare account: `59b8589f738de5e4ab643bedd3a4b0a9`
+- Private R2 bucket: `hydratrace-graph-production`
+- Zerops engine readiness: <https://hydratraceengine-2d0a-4100.prg1.zerops.app/ready>
 
 Only the web URL is a user application. Engine roots return API metadata/JSON;
 link an engine as `https://<engine>/ready` or `https://<engine>/v1/system`, not
 as a second UI.
+
+The live routing cutover is passed: the Worker and Vercel fallback are
+redeployed, Convex production dispatches to Zerops, and the public Vercel web
+bundle names the Zerops engine as its API origin. Production scan
+`3911362687601832470` completed on attempt 1 with exactly 11 monotonic events,
+and the functional public browser workflow passed. The final stricter local
+HydraDB gate passed; the responsive/accessibility rerun remains an automated
+handoff check.
 
 ## Approved variances from `plan.md`
 
@@ -60,14 +70,18 @@ never contain secrets.
 | Any engine | `OSV_BASE_URL` | Optional; defaults to the public OSV API |
 | Any engine | `ENGINE_RATE_LIMIT_PER_MINUTE` | Optional positive integer; default 120 |
 | Vercel fallback engine | `HYDRATRACE_AUTO_SEED_DEMO` | Optional; `true` is acceptable only for this stateless demo boundary |
+| Zerops HydraDB node | `r2AccessKeyId` | Required secret; R2 Object Read & Write token scoped only to the production bucket |
+| Zerops HydraDB node | `r2SecretAccessKey` | Required secret; matching one-time R2 secret access key |
 
 The Zerops graph variables are supplied by
 [`infra/zerops/zerops.yaml`](../infra/zerops/zerops.yaml): private Bolt/HTTP/admin
 addresses, strong consistency, indexer admin URL, graph identity, and the
-service-scoped graph token. Both HydraDB services consume the Object Storage
-endpoint, bucket, and complete access-key pair through Zerops' generated
-cross-service references, including `${hydratracegraph_secretAccessKey}`.
-Never print or copy those credentials into Vercel.
+service-scoped graph token. The storage endpoint is the S3-compatible endpoint
+for Cloudflare account `59b8589f738de5e4ab643bedd3a4b0a9`; the bucket is
+`hydratrace-graph-production`, and the region is `auto`. The node receives the
+bucket-scoped R2 key pair from Zerops secret storage, and the indexer receives
+the same values through scoped cross-service references. Never print or copy
+those credentials into Vercel.
 
 Local in-memory mode requires none of the secrets above. HydraDB local mode uses
 the values in `.env.example` plus
@@ -88,16 +102,27 @@ the values in `.env.example` plus
 2. Deploy the Cloudflare gateway and set its strong shared secret:
 
    ```powershell
+   pnpm --filter @hydratrace/ai-gateway exec wrangler whoami
    pnpm --filter @hydratrace/ai-gateway exec wrangler secret put AI_GATEWAY_SHARED_SECRET
    pnpm --filter @hydratrace/ai-gateway exec wrangler secret put NVIDIA_API_KEY
    pnpm --filter @hydratrace/ai-gateway deploy
    ```
 
-   `NVIDIA_API_KEY` is optional. Workers AI is provided through the committed
-   `AI` binding. The engine must receive the same gateway shared secret.
+   Before changing a secret or deploying, require `wrangler whoami` to show an
+   identity authorized for Cloudflare account
+   `59b8589f738de5e4ab643bedd3a4b0a9`; the `account_id` in `wrangler.jsonc`
+   selects a target but does not grant access. Use the matching Cloudflare
+   profile or scoped token. `NVIDIA_API_KEY` is optional. Workers AI is provided
+   through the committed `AI` binding. The engine must receive the same gateway
+   primary secret. During a zero-downtime multi-caller rotation, temporarily
+   install the old value as `AI_GATEWAY_ROLLOVER_SHARED_SECRET`, redeploy the
+   Worker, move callers to the primary value, and then remove the rollover
+   secret.
 
-3. Provision Zerops Object Storage, `hydradbnode`, `hydradbindexer`, and
-   `hydratraceengine`. For a fresh project, use
+3. Provision the private Cloudflare R2 bucket, `hydradbnode`, `hydradbindexer`,
+   and `hydratraceengine`. Create an R2 Object Read & Write token scoped only to
+   `hydratrace-graph-production`, then install its values in the node's Zerops
+   secret slots without printing them. For a fresh Zerops project, use
    [`infra/zerops/import.yaml`](../infra/zerops/import.yaml); for an existing
    project, verify exact service targets before importing or replacing anything.
 
@@ -110,24 +135,24 @@ the values in `.env.example` plus
    ```
 
    The graph-node deployment includes a direct S3 preflight and cannot start if
-   the injected Object Storage credentials fail both supported signing modes.
+   the injected R2 credentials fail authentication.
 
 5. Require these private/live checks before repointing users:
 
-   - Object Storage preflight passes without printing credentials.
+   - R2 preflight passes without printing credentials.
    - HydraDB `/readyz` succeeds.
    - Indexer `/readyz` succeeds, successful cycles advance, consecutive
      failures are zero, and a graph generation is published.
    - Engine `/ready` returns 200 with `provider: HydraDB` and healthy indexer.
    - A fresh fixture write, repeat import, incident query, and graph-node restart
-     return the expected values in the production-gate record.
+     return the expected values in the current release evidence.
 
 6. Deploy the current Convex functions, then set/recheck its production variables:
 
    ```powershell
-   pnpm exec convex deploy --yes
-   pnpm exec convex env set HYDRATRACE_ENGINE_DISPATCH_URL https://<zerops-engine> --prod
-   pnpm exec convex env set HYDRATRACE_JOB_SHARED_SECRET <same-secret> --prod
+   pnpm exec convex deploy
+   pnpm exec convex env set HYDRATRACE_ENGINE_DISPATCH_URL https://hydratraceengine-2d0a-4100.prg1.zerops.app --prod
+   pnpm exec convex env set HYDRATRACE_JOB_SHARED_SECRET --prod
    ```
 
    Enter secrets through the CLI prompt/stdin or dashboard so they do not appear
@@ -142,16 +167,24 @@ the values in `.env.example` plus
    pnpm dlx vercel@59.1.3 deploy --prod --yes --cwd apps/web
    ```
 
+   Set the variable value to
+   `https://hydratraceengine-2d0a-4100.prg1.zerops.app`.
+
 8. Redeploy the Vercel fallback engine after rotating its shared secrets:
 
    ```powershell
-   pnpm dlx vercel@59.1.3 deploy --prod --yes --cwd apps/engine
+   pnpm dlx vercel@59.1.3 deploy --prod --yes --project hydratrace-engine --scope avinash1286s-projects --cwd apps/engine
    ```
 
-9. Run the complete live and incognito-browser checklist in
-   [the production-gate record](evidence/2026-08-20-production-gate.md). Record
-   deployment IDs and the exact commit; do not replace pending fields with a
-   pass based only on HTTP 200.
+   The explicit project and scope are required when
+   `apps/engine/.vercel/project.json` is absent; do not accept an interactive
+   prompt that would create or deploy a different project.
+
+9. Run the live and browser checklist against the exact deployed commit. The
+   2026-08-21 cutover passed routing, signed-scan, and functional public-browser
+   checks; repeat these after any deployment and record response data rather
+   than inferring a pass from HTTP 200. See
+   [the R2 cutover record](evidence/2026-08-21-r2-cutover.md).
 
 ## Health contract
 
@@ -166,9 +199,9 @@ the values in `.env.example` plus
 ## Rollback and secret rotation
 
 - Vercel: promote a previously verified deployment or run `vercel rollback`.
-- Zerops: redeploy the prior known-good application version; do not delete
-  Object Storage during application rollback.
+- Zerops: redeploy the prior known-good application version; do not delete the
+  R2 bucket during application rollback.
 - If a job or AI shared secret changes, update both communicating sides before
   running the signed-flow gate. Old values must be removed.
-- If Object Storage credentials are exposed, rotate/replace the credentials and
+- If R2 credentials are exposed, rotate/replace the bucket-scoped credentials and
   rerun the S3, persistence, indexer, and restart gates.

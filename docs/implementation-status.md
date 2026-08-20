@@ -1,10 +1,12 @@
-# Implementation status — 2026-08-20
+# Implementation status — 2026-08-21
 
-HydraTrace's product paths are implemented in the repository. Submission
-readiness is intentionally tracked separately from implementation: the public
-Vercel fallback and Cloudflare path have live evidence, while the final Zerops
-persistence/indexer/engine gate, final frozen-tree deployments, and incognito
-walkthrough must all pass before the project is called production-complete.
+HydraTrace's product paths are implemented in the repository. The private
+Cloudflare R2-backed HydraDB/indexer/Zerops engine, Worker and fallback
+rollover, Convex dispatch, Vercel web routing, signed durable scan, and
+functional public-browser workflow have passed. The stricter local HydraDB gate
+and final responsive/accessibility browser audit also passed. No account changes
+remain, and the only manual owner work is the
+three-minute video and submission.
 
 ## Implemented in the repository
 
@@ -32,7 +34,8 @@ walkthrough must all pass before the project is called production-complete.
 
 ## Recorded verification
 
-These are repository-backed facts, not claims about the unfinished Zerops gate:
+These local and repository-backed facts are separate from the live release
+surface recorded below:
 
 | Check | Recorded result |
 |---|---|
@@ -41,38 +44,43 @@ These are repository-backed facts, not claims about the unfinished Zerops gate:
 | HydraDB/reference path comparison | All complete paths matched for eight fixed-seed graph shapes |
 | Known-answer fixture | 3 snapshots, 72 nodes, 102 relationships; repeat import created 0 nodes/0 relationships |
 | AI contract subset | Original 4 files / 28 tests passed, including the 20-question grounding gate; post-observation fallback rerun passed 2 files / 30 tests |
-| Frozen-tree local verification | 38 files / 161 tests, fixture gate, production web build, and final local HydraDB persistence/indexer/restart gate passed |
+| Current repository verification | 38 files / 169 tests passed; exact fixture and production web build passed in the recorded release run |
+| Stricter local HydraDB handoff gate | Passed on a clean per-run prefix: write 4/3, repeat 0/0, restart repeat 0/0, exact strong 3-hop path, and 8/8 reference graph shapes |
+| Final local indexer metrics | Ready 1; 8 successful cycles; 0 failed and consecutive-failed cycles; 3 published `DEPENDS_ON_INSTANCE` generations |
+| Local cold-start allowance | Persistence smoke wrapper uses a 180-second ceiling for the verified cold read path |
 
-See [the local HydraDB gate record](evidence/2026-08-16-hydradb-local-gate.md)
-and [the AI evaluation](evidence/2026-08-20-ai-evaluation.md). The final release
-rerun and deployed commit identity still belong in the production-gate record
-after the current worktree is frozen.
+See [the local HydraDB gate record](evidence/2026-08-16-hydradb-local-gate.md),
+[the AI evaluation](evidence/2026-08-20-ai-evaluation.md), and
+[the R2 cutover record](evidence/2026-08-21-r2-cutover.md). The final committed
+identity still belongs in the release handoff.
 
 ## Live release gate
 
 | Surface | Current status |
 |---|---|
-| Vercel web URL | Public candidate-release deployment passed overview, incident, timeline, graph, reports, remediation-boundary, Copilot, and engineering-page walkthroughs |
-| Vercel fallback engine | Candidate release deployment `dpl_8FvaJASsmqFxAzNXZmmyEcfZ2z9T` is ready as `in-memory-reference`; its Vercel build passed 38 files / 161 tests and the exact fixture gate |
-| Cloudflare AI gateway | Version `e71fa895-6ca7-4e43-81a4-201f8a8863c1` deployed; health passed, unsigned generate returned 401, and four grounded provider answers succeeded |
-| Convex production control plane | Current scheduler/schema deployed; signed scan completed on attempt 1 with all 11 ordered stages; exact duplicate reused one identity; unsigned callback and dispatch each returned 401 |
-| Zerops object storage | **Platform blocked:** two independently provisioned services rejected their generated secrets with `SignatureDoesNotMatch`; latest support ID `YBkYNhAMQWupEYgkryiJbA` |
-| Zerops HydraDB node | Latest init preflight failed against replacement storage; no running container, so persistence/restart proof cannot start |
-| Zerops HydraDB indexer | Not deployed while the graph node is unavailable; successful-cycle/generation proof pending |
-| Zerops graph-backed engine | Not deployed while HydraDB is unavailable; public URL, readiness, scan, and restart proof pending |
-| Vercel web → Zerops engine | Environment repoint, production redeploy, CORS, and incognito browser flow pending |
-| Three-minute video/submission | Manual owner task after all live checks pass |
+| Vercel web URL | <https://hydratrace.vercel.app> is deployed with the Zerops engine origin; functional public-browser workflow passed |
+| Vercel fallback engine | <https://hydratrace-engine.vercel.app> is redeployed and ready as the stateless `in-memory-reference` boundary; unsigned protected request returned 401 |
+| Cloudflare AI gateway | <https://hydratrace-ai-gateway.hydratrace-ai-gateway.workers.dev> is redeployed after rollover and served the grounded Zerops Copilot pass |
+| Convex production control plane | `https://accomplished-skunk-643.convex.cloud` is deployed with aligned dispatch and job secret; production scan `3911362687601832470` completed on attempt 1 in 18.058s |
+| Cloudflare R2 | Private bucket `hydratrace-graph-production` in account `59b8589f738de5e4ab643bedd3a4b0a9` is the active HydraDB durability layer |
+| Zerops HydraDB node | Active against R2; durable demo state remained available through the restart gate |
+| Zerops HydraDB indexer | Active and healthy in dependency-aware engine readiness |
+| Zerops graph-backed engine | <https://hydratraceengine-2d0a-4100.prg1.zerops.app>; readiness, cold hydration, temporal queries, strong remediation, gateway Copilot, and durable scan passed |
+| Vercel web → Zerops engine | Repoint, production redeploy, host display, CORS, functional browser flow, 390px overflow, graph legend, and accessibility reruns passed |
+| Three-minute video/submission | Only remaining manual owner task after final automated reruns |
 
-The live evidence fields are in
-[the production-gate record](evidence/2026-08-20-production-gate.md). A URL being
-allocated is not a pass: the record requires the expected response, graph state,
-and restart behavior.
+The current durable values are in
+[the R2 cutover record](evidence/2026-08-21-r2-cutover.md). Its live passes use
+the expected response, graph state, signed workflow, and browser behavior rather
+than treating an allocated URL as evidence.
 
-The Vercel fallback also passed its CORS boundary: the public Vercel origin was
-allowed and an unapproved origin was not. Markdown, JSON, and SARIF report
-downloads returned 200. Remediation correctly remained `INCONCLUSIVE` with
-`REFERENCE_GRAPH`; only the pending HydraDB deployment can satisfy the planned
-`VERIFIED` / `STRONG_GRAPH` acceptance condition.
+The Vercel fallback passed readiness, unsigned-request rejection, and its
+stateless boundary. On the production Zerops route, the browser passed graph,
+timeline, package-neighborhood, grounded Copilot, and `VERIFIED` /
+`STRONG_GRAPH` remediation with zero remaining paths; Markdown, JSON, and SARIF
+downloads were valid. A cold post-deploy API run also discovered 3 candidates,
+built the exact proposal, and verified zero paths in 12.558s without calling
+`/v1/demo` first.
 
 ## Approved plan variances
 

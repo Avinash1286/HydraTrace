@@ -14,26 +14,26 @@ Status terms:
 
 | Plan claim | Evidence required | Status |
 |---|---|---|
-| Exact npm and pnpm versions/topology | Known-answer parser fixtures and exact counts | Passed in frozen local gate |
-| August 15 import gate | Three snapshots, 72 nodes, 102 relationships, repeat 0/0 | Passed; recapture in final gate |
-| Deterministic IDs/provenance | Unit/property assertions and duplicate import | Passed in frozen local gate |
+| Exact npm and pnpm versions/topology | Known-answer parser fixtures and exact counts | Passed in current repository verification |
+| August 15 import gate | Three snapshots, 72 nodes, 102 relationships, repeat 0/0 | Passed in final repository gate |
+| Deterministic IDs/provenance | Unit/property assertions and duplicate import | Passed in current repository verification |
 | Durable local graph | Write, repeat, restart, and exact read | Passed in [local HydraDB record](evidence/2026-08-16-hydradb-local-gate.md) |
-| Separate indexer | Ready, successful fresh cycles, no consecutive failures, published generation | Passed locally; Zerops pending |
-| Current/historical blast radius | Exact service/deployment/path fixtures and temporal boundary | Passed in frozen local gate |
-| Graph-native production traversal | HydraDB-backed incident responses before and after restart | Pending live Zerops gate |
-| Safe/development negative controls | Exact fixture assertions | Passed in frozen local gate |
-| Repository/ZIP source reachability | Bounded acquisition plus static/runtime/unknown tests | Passed in frozen local gate |
-| Exact advisory enrichment | OSV identity/order/provenance and outage-state tests | Passed in frozen local gate |
-| Package neighborhoods | Maintainer/infrastructure/typosquat reasons | Passed in frozen local gate |
-| Provider-backed remediation candidates | Exact source match, registry/OSV rejection, real lockfile simulation | Passed in frozen local gate |
-| Overall remediation verification | Complete plan, all fixed services, strong zero-path query | Implemented; live HydraDB workflow pending |
-| Convex retries/progress | Signed upload/schedule/dispatch/callback, ordered events, reclaim/retry/cancel | Production scan completed on attempt 1 with all 11 ordered stages; unsigned engine dispatch and Convex callback each returned 401 |
-| Dependency-aware readiness | HydraDB/indexer failure returns 503 while `/health` remains liveness | Passed locally; Zerops pending |
+| Separate indexer | Ready, successful fresh cycles, no consecutive failures, published generation | Passed locally and healthy in the Zerops API gate |
+| Current/historical blast radius | Exact service/deployment/path fixtures and temporal boundary | Passed in current repository verification |
+| Graph-native production traversal | HydraDB-backed incident responses before and after restart | Passed in the R2-backed Zerops API gate |
+| Safe/development negative controls | Exact fixture assertions | Passed in current repository verification |
+| Repository/ZIP source reachability | Bounded acquisition plus static/runtime/unknown tests | Passed in current repository verification |
+| Exact advisory enrichment | OSV identity/order/provenance and outage-state tests | Passed in current repository verification |
+| Package neighborhoods | Maintainer/infrastructure/typosquat reasons | Passed in current repository verification |
+| Provider-backed remediation candidates | Exact source match, registry/OSV rejection, real lockfile simulation | Passed in current repository verification |
+| Overall remediation verification | Complete plan, all fixed services, strong zero-path query | Passed on Zerops: `VERIFIED`, `STRONG_GRAPH`, 0 remaining paths, 3 fixed snapshots |
+| Convex retries/progress | Signed upload/schedule/dispatch/callback, ordered events, reclaim/retry/cancel | Production scan `3911362687601832470` completed on attempt 1 in 18.058s with exactly 11 monotonic events; the duplicate-acknowledgement race found by the first scan was fixed and regressed |
+| Dependency-aware readiness | HydraDB/indexer failure returns 503 while `/health` remains liveness | Passed locally; live Zerops `/ready` returned 200 with graph and indexer healthy |
 | Grounded AI/fallback | Schema, allowed references, abstention, auth, provider fallback | Original 4-file/28-test gate, post-fix 2-file/30-test rerun, four live provider answers, and the live deterministic-fallback retest passed; see [AI evaluation](evidence/2026-08-20-ai-evaluation.md) |
-| Cloudflare Workers AI | Authenticated engine → Worker → model result with allowed evidence | Deployed Worker health/auth passed; four provider-backed grounded answers passed |
-| Public application | Vercel web points to ready Zerops engine and full incognito workflow passes | Public fallback walkthrough passed; final Zerops repoint and incognito gate pending |
-| Graph/timeline/evidence/report UI | Current-commit browser interactions and downloaded reports | Overview, incident, timeline, graph, reports, and Copilot passed on the Vercel fallback; durable Zerops proof pending |
-| Restorable demo | Two restores return the same facts without duplicate graph records | Passed locally; public fallback renders 2 production services / 3 paths; production durable rerun pending |
+| Cloudflare Workers AI | Authenticated engine → Worker → model result with allowed evidence | Worker rollover and redeploy passed; Zerops returned a grounded/high gateway answer with 6 allowed references and 0 unknowns |
+| Public application | Vercel web points to ready Zerops engine and full public workflow passes | Passed: final navigation, desktop/mobile overflow, graph legend, active-state accessibility, timeline label, and error-free browser reruns all used the Zerops engine |
+| Graph/timeline/evidence/report UI | Current-commit browser interactions and downloaded reports | Graph, timeline, neighborhood, Copilot, and strong remediation passed; Markdown, JSON, and SARIF downloads were valid |
+| Restorable demo | Two restores return the same facts without duplicate graph records | R2-backed cold restore retained 8 snapshots with zero duplicate writes and returned 2 production services / 3 paths; cold post-deploy remediation passed without a prior `/v1/demo` call |
 | Vercel web instead of Zerops web | Public static UI on Vercel; engine remains beside private HydraDB | Approved variance |
 | CI without GitHub Actions | Local/Vercel build gates and CLI; no Actions workflow | Approved variance |
 | CLI baseline comparison | Exact immutable snapshot/SHA delta evaluation | Passed locally; symbolic `main` intentionally rejected |
@@ -41,7 +41,7 @@ Status terms:
 
 ## Production acceptance numbers
 
-The final live fixture must demonstrate:
+The release fixture requires:
 
 - fresh aggregate write: 72 nodes and 102 relationships;
 - repeat write: 0 nodes and 0 relationships created;
@@ -53,13 +53,19 @@ The final live fixture must demonstrate:
   zero, verification level is `STRONG_GRAPH`, and status is `VERIFIED`;
 - the same facts remain after restarting the graph node and engine.
 
-Observed values belong only in
-[the production-gate record](evidence/2026-08-20-production-gate.md). Until that
-record is complete, HydraTrace must not be described as production-complete.
+The repository fixture gate passed with 72 nodes, 102 relationships, and a 0/0
+repeat. The R2-backed cold Zerops gate retained 8 durable snapshots with zero
+duplicate writes; returned 2 services / 3 paths for production, 3 / 5 with
+development, 0 / 0 before exposure, and 2 / 3 during exposure; and completed
+remediation as `VERIFIED` / `STRONG_GRAPH` with 0 remaining paths and 3 fixed
+snapshots. See [the August 21 R2 cutover record](evidence/2026-08-21-r2-cutover.md).
 
-The blocking live dependency is Zerops-managed Object Storage: both the original
-empty service and a fresh replacement rejected the generated secret with
-`SignatureDoesNotMatch` under signed S3 V4 and V2 requests. Zerops support ID
-`YBkYNhAMQWupEYgkryiJbA` tracks the latest failed node deployment. The passing
-Vercel reference surface does not waive the pending persistence, indexer,
-restart, and `STRONG_GRAPH` rows.
+The prior Zerops-managed Object Storage failure is no longer the active
+dependency: the durable stack uses the private Cloudflare R2 bucket
+`hydratrace-graph-production`. Worker rollover, fallback redeploy, Convex
+dispatch, Vercel web routing, the signed durable scan, and the functional public
+browser walkthrough all passed. The final stricter local HydraDB gate passed
+with restart idempotency, the exact strong path, all 8 property shapes, and a
+fresh published indexer generation. The final responsive/accessibility browser
+rerun also passed; the only manual owner task is the three-minute video and
+submission.

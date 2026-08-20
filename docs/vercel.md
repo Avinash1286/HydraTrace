@@ -9,7 +9,7 @@ Actions workflow.
 - Production UI: <https://hydratrace.vercel.app>
 - Output: static Next.js export in `out/`
 - Required production variable:
-  `NEXT_PUBLIC_HYDRATRACE_API_URL=https://<public-zerops-engine>`
+  `NEXT_PUBLIC_HYDRATRACE_API_URL=https://hydratraceengine-2d0a-4100.prg1.zerops.app`
 
 The API origin is compiled into the browser bundle. Redeploy the web project
 after changing it. It is public configuration, not a place for a token.
@@ -39,7 +39,7 @@ WEB_ORIGIN=https://hydratrace.vercel.app
 CONVEX_URL=https://accomplished-skunk-643.convex.cloud
 HYDRATRACE_JOB_SHARED_SECRET=<same 32+ character value as Convex>
 HYDRATRACE_AUTO_SEED_DEMO=true
-AI_GATEWAY_URL=https://hydratrace-ai-gateway.abinashyadav3-141.workers.dev
+AI_GATEWAY_URL=https://hydratrace-ai-gateway.hydratrace-ai-gateway.workers.dev
 AI_GATEWAY_SHARED_SECRET=<same 32+ character value as the Worker>
 ```
 
@@ -49,19 +49,29 @@ disabled explicitly with `HYDRATRACE_SCAN_ENRICHMENT=false`; that does not mean
 the package was checked and found safe.
 
 ```powershell
-pnpm dlx vercel@59.1.3 deploy --prod --yes --cwd apps/engine
+pnpm dlx vercel@59.1.3 deploy --prod --yes --project hydratrace-engine --scope avinash1286s-projects --cwd apps/engine
 ```
 
 Redeploy after rotating either shared secret. Scope secrets to the environments
-that require them and never put them in a `NEXT_PUBLIC_*` variable.
+that require them and never put them in a `NEXT_PUBLIC_*` variable. The explicit
+project and scope prevent an unlinked `apps/engine` directory from creating or
+deploying the wrong project.
+
+The 2026-08-21 dual-credential cutover is complete: Zerops uses the Worker
+primary secret, while the redeployed Vercel fallback uses the independently
+rotated `AI_GATEWAY_ROLLOVER_SHARED_SECRET`. The fallback is ready and an
+unsigned protected request returns 401. Converging the fallback onto the
+primary value and removing the rollover value is a non-blocking hardening
+follow-up, not a failed release gate.
 
 ## Why the production graph engine is not Vercel
 
-HydraDB Bolt/HTTP/admin ports and Zerops Object Storage are private. Publishing
-those ports merely so a Vercel function can connect would violate the security
+HydraDB Bolt/HTTP/admin ports and the Cloudflare R2 bucket are private. Publishing
+HydraDB ports merely so a Vercel function can connect would violate the security
 boundary. The durable graph-backed engine therefore runs in the same Zerops
-project as HydraDB and the separate indexer. Vercel hosts the user-facing static
-web and a clearly labeled fallback engine only.
+project as HydraDB and the separate indexer, with persistence in the private
+Cloudflare R2 bucket `hydratrace-graph-production`. Vercel hosts the user-facing
+static web and a clearly labeled fallback engine only.
 
 ## Verification
 
@@ -75,6 +85,12 @@ After every production deployment:
    healthy indexer before treating the application as production-ready.
 5. Complete restore, incident, graph, timeline, evidence, report, remediation,
    and copilot checks from the web URL.
+
+For the 2026-08-21 release, the production bundle pointed to the Zerops host and
+the functional browser pass covered navigation, graph, timeline, neighborhood,
+Copilot, `VERIFIED` / `STRONG_GRAPH` remediation with 0 remaining paths, and
+valid Markdown, JSON, and SARIF downloads. A final responsive/accessibility
+rerun remains separate from that functional pass.
 
 The engine bare root is a JSON discovery route. Public documentation and demos
 must link the web UI or an explicit health/operator path, never the engine root

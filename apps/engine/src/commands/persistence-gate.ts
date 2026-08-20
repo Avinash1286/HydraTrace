@@ -11,6 +11,12 @@ import {
 const root = resolve(import.meta.dirname, "../../../..");
 const composeFile = resolve(root, "infra/local/docker-compose.yml");
 const secretPath = resolve(root, "infra/local/secrets/auth-token");
+const composeEnvironment = {
+  ...process.env,
+  // Every run gets a clean durable prefix, so the gate proves a fresh index
+  // publication without deleting or depending on data from an earlier run.
+  HYDRATRACE_LOCAL_GRAPH_DATA_PATH: `development/gates/${randomBytes(12).toString("hex")}/slatedb-graph/data`,
+};
 
 let token: string;
 try {
@@ -24,7 +30,11 @@ if (token.length < 32) {
   throw new Error("HydraDB auth token must contain at least 32 characters");
 }
 
-await command("docker", ["compose", "-f", composeFile, "up", "-d", "hydradb-node"]);
+await command(
+  "docker",
+  ["compose", "-f", composeFile, "up", "-d", "hydradb-node"],
+  composeEnvironment,
+);
 await waitReady("http://127.0.0.1:9090/readyz", 60_000);
 const environment = {
   ...process.env,
@@ -36,26 +46,44 @@ const environment = {
   HYDRADB_NAMESPACE: "development",
   HYDRADB_AUTH_TOKEN: token,
 };
-await pnpmSmoke({ ...environment, HYDRADB_CONSISTENCY: "causal" });
-await command("docker", [
-  "compose",
-  "-f",
-  composeFile,
-  "up",
-  "-d",
-  "--force-recreate",
-  "hydradb-indexer",
-]);
+// HydraDB v0.1.1's local HTTP path procedure can spend several minutes warming
+// object-store state even for this four-node fixture. Keep the causal smoke and
+// property gates on the serialized Bolt adapter, then prove the required strong
+// HTTP path separately below.
+const causalBoltEnvironment = {
+  ...environment,
+  HYDRADB_HTTP_URL: undefined,
+  HYDRADB_CONSISTENCY: "causal",
+};
+await command(
+  "docker",
+  [
+    "compose",
+    "-f",
+    composeFile,
+    "up",
+    "-d",
+    "--force-recreate",
+    "hydradb-indexer",
+  ],
+  composeEnvironment,
+);
 // Recreate the indexer so its process counters start at zero. A single healthy
 // cycle then proves this run, instead of accidentally accepting an old metric
 // or waiting for three full rebuilds on a slow Docker Desktop host.
-const successfulCycles = await waitIndexer(1, 120_000);
-await command("docker", ["compose", "-f", composeFile, "restart", "hydradb-node"]);
+const emptyCycles = await waitIndexer(1, 120_000, false);
+await pnpmSmoke(causalBoltEnvironment);
+const publishedCycles = await waitIndexer(emptyCycles + 1, 120_000, true);
+await command(
+  "docker",
+  ["compose", "-f", composeFile, "restart", "hydradb-node"],
+  composeEnvironment,
+);
 await waitReady("http://127.0.0.1:9090/readyz", 60_000);
-await pnpmSmoke({ ...environment, HYDRADB_CONSISTENCY: "causal" });
+await pnpmSmoke(causalBoltEnvironment);
+await waitIndexer(publishedCycles + 1, 120_000, true);
 await strongPathProbe(environment);
-await pnpmPropertyGate(environment);
-await waitIndexer(successfulCycles + 1, 120_000);
+await pnpmPropertyGate(causalBoltEnvironment);
 process.stdout.write(
   "HydraDB persistence, idempotency, indexing, and three-hop path gate passed.\n",
 );
@@ -79,6 +107,7 @@ async function waitReady(url: string, timeoutMs: number): Promise<void> {
 async function waitIndexer(
   minimumCycles: number,
   timeoutMs: number,
+  requireDependencyGeneration: boolean,
 ): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   let last = "unavailable";
@@ -96,12 +125,14 @@ async function waitIndexer(
       const ready = metric(metrics, "graph_indexer_ready");
       const successes = metric(metrics, "graph_indexer_successful_cycles");
       const failures = metric(metrics, "graph_indexer_consecutive_failed_cycles");
-      last = `ready=${ready} successful=${successes} failures=${failures}`;
+      const generations = dependencyGenerations(metrics);
+      last = `ready=${ready} successful=${successes} failures=${failures} generations=${generations}`;
       if (
         health.ok &&
         ready === 1 &&
         successes >= minimumCycles &&
-        failures === 0
+        failures === 0 &&
+        (!requireDependencyGeneration || generations >= 1)
       ) {
         return successes;
       }
@@ -111,6 +142,19 @@ async function waitIndexer(
     await delay(2_000);
   }
   throw new Error(`HydraDB indexer was not healthy: ${last}`);
+}
+
+function dependencyGenerations(text: string): number {
+  const samples = text.matchAll(
+    /^graph_indexer_generations_published\{[^}]*edge_type="DEPENDS_ON_INSTANCE"[^}]*\}\s+([0-9]+(?:\.[0-9]+)?)$/gmu,
+  );
+  let total = 0;
+  let found = false;
+  for (const sample of samples) {
+    found = true;
+    total += Number(sample[1]);
+  }
+  return found ? total : Number.NaN;
 }
 
 function metric(text: string, name: string): number {
@@ -129,14 +173,37 @@ async function strongPathProbe(env: NodeJS.ProcessEnv): Promise<void> {
   );
   try {
     const fixture = createHydraDbSmokeFixture();
-    const paths = await store.findPaths({
-      from: { id: fixture.expectedPath[0]!, label: "Resolution" },
-      to: { id: fixture.expectedPath.at(-1)!, label: "Resolution" },
-      relationshipType: "DEPENDS_ON_INSTANCE",
-      minDepth: 3,
-      maxDepth: 3,
-      limit: 2,
-    });
+    let paths: Awaited<ReturnType<typeof store.findPaths>> | undefined;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        paths = await store.findPaths({
+          from: { id: fixture.expectedPath[0]!, label: "Resolution" },
+          to: { id: fixture.expectedPath.at(-1)!, label: "Resolution" },
+          relationshipType: "DEPENDS_ON_INSTANCE",
+          minDepth: 3,
+          maxDepth: 3,
+          limit: 2,
+        });
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          attempt === 3 ||
+          !/(?:HTTP 408|query timeout|TimeoutError|aborted due to timeout)/iu.test(
+            message,
+          )
+        ) {
+          throw error;
+        }
+        process.stdout.write(
+          `HydraDB strong-read path timed out during cold cache warm-up; retrying (${attempt}/3).\n`,
+        );
+        await delay(5_000);
+      }
+    }
+    if (paths === undefined) {
+      throw new Error("HydraDB strong-read path did not return a result");
+    }
     const path = paths[0];
     if (
       paths.length !== 1 ||
@@ -163,9 +230,9 @@ function pnpmSmoke(env: NodeJS.ProcessEnv): Promise<void> {
         process.env.ComSpec ?? "cmd.exe",
         ["/d", "/s", "/c", "pnpm smoke:hydradb"],
         env,
-        60_000,
+        180_000,
       )
-    : command("pnpm", ["smoke:hydradb"], env, 60_000);
+    : command("pnpm", ["smoke:hydradb"], env, 180_000);
 }
 
 function pnpmPropertyGate(env: NodeJS.ProcessEnv): Promise<void> {

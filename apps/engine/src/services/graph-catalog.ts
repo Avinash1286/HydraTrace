@@ -430,10 +430,11 @@ async function reconstructDeployments(
       limit: 1,
     }))[0];
     if (serviceRelationship === undefined || environmentRelationship === undefined) continue;
-    const [service, environment] = await Promise.all([
-      store.getNodes([serviceRelationship.from.id]),
-      store.getNodes([environmentRelationship.to.id]),
-    ]);
+    // Keep v0.1.1 cold-start hydration conservative and sequential. This path
+    // runs only while rebuilding the in-memory catalog, so parallel reads are
+    // not worth adding another compatibility variable to the restored state.
+    const service = await store.getNodes([serviceRelationship.from.id]);
+    const environment = await store.getNodes([environmentRelationship.to.id]);
     const serviceNode = service.find((node): node is GraphNodeRecord<"Service"> => node.label === "Service");
     const environmentNode = environment.find((node): node is GraphNodeRecord<"Environment"> => node.label === "Environment");
     if (serviceNode === undefined || environmentNode === undefined) continue;

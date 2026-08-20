@@ -9,12 +9,15 @@ const token = process.env.HYDRADB_AUTH_TOKEN ?? (await readFile(secretPath, "utf
 const environment = {
   ...process.env,
   HYDRADB_BOLT_URI: process.env.HYDRADB_BOLT_URI ?? "bolt://127.0.0.1:7687",
-  HYDRADB_HTTP_URL: process.env.HYDRADB_HTTP_URL ?? "http://127.0.0.1:8443",
+  HYDRADB_HTTP_URL: process.env.HYDRADB_HTTP_URL,
   HYDRADB_AUTH_TOKEN: token,
   HYDRADB_GRAPH_ID: process.env.HYDRADB_GRAPH_ID ?? "default",
   HYDRADB_CELL_ID: process.env.HYDRADB_CELL_ID ?? "cell-0",
   HYDRADB_NAMESPACE: process.env.HYDRADB_NAMESPACE ?? "development",
-  HYDRADB_CONSISTENCY: "strong",
+  // The property gate validates path semantics immediately after each write.
+  // Strong/indexed visibility is proved separately by the persistence gate
+  // after an index cycle; causal Bolt reads are the correct boundary here.
+  HYDRADB_CONSISTENCY: process.env.HYDRADB_CONSISTENCY ?? "causal",
 };
 const store = HydraDbGraphStore.connect(hydraDbConnectionOptionsFromEnv(environment));
 

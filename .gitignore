@@ -2,6 +2,9 @@ node_modules/
 dist/
 .turbo/
 .vercel/
+.wrangler/
+.dev.vars
+.dev.vars.*
 coverage/
 .cache/
 cache/

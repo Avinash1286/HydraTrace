@@ -67,24 +67,55 @@ export const progress = internalMutation({
     const scanEvents = await ctx.db.query("scanEvents")
       .withIndex("by_scan_sequence", (q) => q.eq("scanId", job.scanId))
       .collect();
-    await ctx.db.insert("scanEvents", {
-      scanId: job.scanId,
-      sequence: scanEvents.length,
-      stage: persistedStage,
-      at: args.at,
-      message: retryFailure ? `${args.message}; retry scheduled` : args.message,
-    });
+    const scanDispatchSequence = scanEvents.reduce(
+      (latest, event) => event.stage === "DISPATCHING"
+        ? Math.max(latest, event.sequence)
+        : latest,
+      -1,
+    );
+    const existingScanAcknowledgement = persistedStage === "ACKNOWLEDGED"
+      ? scanEvents.find((event) =>
+        event.stage === "ACKNOWLEDGED" && event.sequence > scanDispatchSequence)
+      : undefined;
+    if (existingScanAcknowledgement === undefined) {
+      await ctx.db.insert("scanEvents", {
+        scanId: job.scanId,
+        sequence: scanEvents.length,
+        stage: persistedStage,
+        at: args.at,
+        message: retryFailure ? `${args.message}; retry scheduled` : args.message,
+      });
+    } else if (args.at < existingScanAcknowledgement.at) {
+      // The dispatch action and the engine callback can acknowledge the same
+      // attempt concurrently. Keep one event at the engine's earlier time so
+      // the following progress callback cannot make the timeline run backward.
+      await ctx.db.patch(existingScanAcknowledgement._id, { at: args.at });
+    }
     const jobEvents = await ctx.db.query("jobEvents")
       .withIndex("by_job_sequence", (q) => q.eq("jobId", args.jobId))
       .collect();
-    await ctx.db.insert("jobEvents", {
-      jobId: args.jobId,
-      sequence: jobEvents.length,
-      state: persistedStage,
-      message: retryFailure ? `${args.message}; retry scheduled` : args.message,
-      at: args.at,
-      traceId: job.idempotencyKey ?? String(args.jobId),
-    });
+    const jobDispatchSequence = jobEvents.reduce(
+      (latest, event) => event.state === "DISPATCHING"
+        ? Math.max(latest, event.sequence)
+        : latest,
+      -1,
+    );
+    const existingJobAcknowledgement = persistedStage === "ACKNOWLEDGED"
+      ? jobEvents.find((event) =>
+        event.state === "ACKNOWLEDGED" && event.sequence > jobDispatchSequence)
+      : undefined;
+    if (existingJobAcknowledgement === undefined) {
+      await ctx.db.insert("jobEvents", {
+        jobId: args.jobId,
+        sequence: jobEvents.length,
+        state: persistedStage,
+        message: retryFailure ? `${args.message}; retry scheduled` : args.message,
+        at: args.at,
+        traceId: job.idempotencyKey ?? String(args.jobId),
+      });
+    } else if (args.at < existingJobAcknowledgement.at) {
+      await ctx.db.patch(existingJobAcknowledgement._id, { at: args.at });
+    }
     await ctx.db.insert("auditEvents", {
       actor: "hydratrace-engine",
       action: "job.progress",

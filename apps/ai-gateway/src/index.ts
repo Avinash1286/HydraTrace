@@ -2,6 +2,7 @@ import { z } from "zod";
 
 interface Env {
   AI: Ai;
+  AI_GATEWAY_ROLLOVER_SHARED_SECRET?: string;
   AI_GATEWAY_SHARED_SECRET?: string;
   CLOUDFLARE_AI_MODEL: string;
   NVIDIA_API_KEY?: string;
@@ -30,10 +31,25 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return Response.json({ status: "ok", service: "hydratrace-ai-gateway" });
     if (request.method !== "POST" || url.pathname !== "/v1/generate") return Response.json({ error: "NOT_FOUND" }, { status: 404 });
-    if (typeof env.AI_GATEWAY_SHARED_SECRET !== "string" || env.AI_GATEWAY_SHARED_SECRET.length < 32) {
+    if (
+      !isStrongSharedSecret(env.AI_GATEWAY_SHARED_SECRET) ||
+      (
+        env.AI_GATEWAY_ROLLOVER_SHARED_SECRET !== undefined &&
+        !isStrongSharedSecret(env.AI_GATEWAY_ROLLOVER_SHARED_SECRET)
+      )
+    ) {
       return Response.json({ error: "GATEWAY_NOT_CONFIGURED" }, { status: 503 });
     }
-    if (!constantTimeEqual(request.headers.get("authorization") ?? "", `Bearer ${env.AI_GATEWAY_SHARED_SECRET}`)) return Response.json({ error: "UNAUTHORIZED" }, { status: 401 });
+    const sharedSecrets = [
+      env.AI_GATEWAY_SHARED_SECRET,
+      ...(env.AI_GATEWAY_ROLLOVER_SHARED_SECRET === undefined
+        ? []
+        : [env.AI_GATEWAY_ROLLOVER_SHARED_SECRET]),
+    ];
+    if (!await matchesBearerSecret(
+      request.headers.get("authorization") ?? "",
+      sharedSecrets,
+    )) return Response.json({ error: "UNAUTHORIZED" }, { status: 401 });
     const parsed = requestSchema.safeParse(await request.json().catch(() => undefined));
     if (!parsed.success) return Response.json({ error: "INVALID_REQUEST" }, { status: 400 });
     const allowedRefs = new Set(parsed.data.evidenceRefs);
@@ -96,7 +112,42 @@ function textFromCloudflare(value: unknown): string {
   throw new Error("Cloudflare output did not contain text");
 }
 function extractJson(value: string): string { const first = value.indexOf("{"); const last = value.lastIndexOf("}"); if (first < 0 || last <= first) throw new Error("No JSON object"); return value.slice(first, last + 1); }
-function constantTimeEqual(left: string, right: string): boolean { if (left.length !== right.length) return false; let difference = 0; for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index); return difference === 0; }
+function isStrongSharedSecret(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 32;
+}
+async function matchesBearerSecret(
+  authorization: string,
+  sharedSecrets: readonly string[],
+): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [authorizationHash, ...expectedHashes] = await Promise.all([
+    authorization,
+    ...sharedSecrets.map((secret) => `Bearer ${secret}`),
+  ].map((value) => crypto.subtle.digest("SHA-256", encoder.encode(value))));
+  if (authorizationHash === undefined) return false;
+  let matched = 0;
+  for (const expectedHash of expectedHashes) {
+    matched |= Number(timingSafeDigestEqual(authorizationHash, expectedHash));
+  }
+  return matched !== 0;
+}
+function timingSafeDigestEqual(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  const workerSubtle: SubtleCrypto & {
+    timingSafeEqual?(first: ArrayBuffer, second: ArrayBuffer): boolean;
+  } = crypto.subtle;
+  if (typeof workerSubtle.timingSafeEqual === "function") {
+    return workerSubtle.timingSafeEqual(left, right);
+  }
+  // Node's Web Crypto does not yet expose Workers' timingSafeEqual. Tests use
+  // this fixed-size SHA-256 fallback; production Workers take the branch above.
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  let difference = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    difference |= leftBytes[index]! ^ rightBytes[index]!;
+  }
+  return difference === 0;
+}
 function safeProviderError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 240) : "Unknown provider error";
 }

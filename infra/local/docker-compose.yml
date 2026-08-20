@@ -3,6 +3,7 @@ name: hydratrace-local
 x-hydradb-object-store: &hydradb-object-store
   CLOUD_PROVIDER: aws
   AWS_BUCKET_NAME: hydratrace-local
+  GRAPH_DATA_PATH: ${HYDRATRACE_LOCAL_GRAPH_DATA_PATH:-development/slatedb-graph/data}
   AWS_DEFAULT_REGION: us-east-1
   AWS_ENDPOINT: http://minio:9000
   AWS_ALLOW_HTTP: "true"

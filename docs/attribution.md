@@ -18,11 +18,14 @@ repository.
 - [Convex](https://www.convex.dev) provides durable workflow state and scheduled
   orchestration.
 - [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/) and the
-  optional [NVIDIA NIM](https://build.nvidia.com) endpoint provide model inference.
-  Their output is schema-validated and restricted to deterministic evidence IDs.
+  optional [NVIDIA NIM](https://build.nvidia.com) endpoint provide model inference;
+  [Cloudflare R2](https://developers.cloudflare.com/r2/) provides the private
+  S3-compatible HydraDB durability layer. Model output is schema-validated and
+  restricted to deterministic evidence IDs.
 - [Zerops](https://zerops.io) provides private application compute and
-  S3-compatible object storage; [Vercel](https://vercel.com) hosts the public web
-  application and fallback engine deployment.
+  networking for HydraDB, its indexer, and the graph-backed engine;
+  [Vercel](https://vercel.com) hosts the public web application and fallback
+  engine deployment.
 
 ## Principal application libraries
 

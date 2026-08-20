@@ -110,20 +110,23 @@ export function createHydraDbDriver(options: HydraDbConnectionOptions): Driver {
   const token = options.authToken
     ? auth.basic("neo4j", options.authToken)
     : undefined;
-  // Stable graph IDs can use the full nonnegative signed 63-bit range.
+  // neo4j-driver 5.27 is intentionally pinned: later drivers use the Bolt
+  // manifest handshake, whose fragmented response is incompatible with this
+  // HydraDB release. Stable IDs also require lossless signed 63-bit integers.
   return createDriver(options.uri, token);
 }
 
 /**
- * Bolt adapter restricted to HydraDB v0.1.1's documented OpenCypher subset.
- * It uses scalar SET clauses, directed one-hop relationship patterns, explicit
- * property projections, lossless integer IDs, and the native SPpaths procedure.
+ * HydraDB v0.1.1 adapter restricted to its documented OpenCypher subset.
+ * Bolt handles scalar reads and writes; configured path reads use the HTTP
+ * query stream for deterministic completion and lossless integer handling.
  */
 export class HydraDbGraphStore implements GraphStore {
   readonly #driver: Driver;
   readonly #database: string | undefined;
   readonly #batchSize: number;
   readonly #consistency: "causal" | "strong";
+  #boltQueryTail: Promise<void> = Promise.resolve();
   readonly #strongHttp:
     | {
         url: string;
@@ -427,13 +430,14 @@ export class HydraDbGraphStore implements GraphStore {
     const { direction, minDepth, maxDepth, limit } = validatePathQuery(query);
     const relDirection =
       direction === "out" ? "outgoing" : direction === "in" ? "incoming" : "both";
-    if (this.#consistency === "strong") {
-      return this.#findPathsStrongHttp(
+    if (this.#strongHttp !== undefined) {
+      return this.#findPathsHttp(
         query,
         relDirection,
         minDepth,
         maxDepth,
         limit,
+        this.#consistency,
       );
     }
     const cypher = [
@@ -626,30 +630,74 @@ export class HydraDbGraphStore implements GraphStore {
     parameters: Record<string, unknown>,
     access: "read" | "write" = "write",
   ): Promise<QueryResult> {
-    const session = this.#driver.session(
-      this.#database === undefined ? {} : { database: this.#database },
-    );
+    const previous = this.#boltQueryTail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#boltQueryTail = previous.then(() => current);
+    await previous;
     try {
-      return await session.run(cypher, parameters, {
-        // HydraDB v0.1.1 permits strong consistency only for reads. Strong
-        // path reads use the HTTP implementation below because its Bolt path
-        // response is not decoded correctly by neo4j-driver 6.
-        metadata: {
-          "hydradb.consistency": "causal",
-        },
-      });
+      const session = this.#driver.session(
+        this.#database === undefined ? {} : { database: this.#database },
+      );
+      try {
+        return await session.run(cypher, parameters, {
+          // HydraDB v0.1.1 permits strong consistency only for reads. Bolt
+          // fallback reads and writes stay causal; configured path reads use
+          // the HTTP transport below.
+          metadata: {
+            "hydradb.consistency": "causal",
+          },
+        });
+      } finally {
+        await session.close();
+      }
     } finally {
-      await session.close();
+      // Query failures and session-close failures must never strand the next
+      // caller behind this store's serialization barrier.
+      release();
     }
   }
 
-  async #findPathsStrongHttp(
+  async #findPathsHttp(
     query: GraphPathQuery,
     relDirection: "outgoing" | "incoming" | "both",
     minDepth: number,
     maxDepth: number,
     limit: number,
+    consistency: "causal" | "strong",
   ): Promise<readonly GraphPath[]> {
+    const result = await this.#queryHttp(
+      [
+        "CALL algo.SPpaths({",
+        "  sourceNode: $source,",
+        "  targetNode: $target,",
+        `  relTypes: ['${query.relationshipType}'],`,
+        "  maxLen: $maxLen,",
+        "  relDirection: $relDirection,",
+        "  pathCount: $pathCount,",
+        "  resultLimit: $resultLimit",
+        "}) YIELD path RETURN path",
+      ].join("\n"),
+      {
+        source: databaseId(query.from.id),
+        target: databaseId(query.to.id),
+        maxLen: int(maxDepth),
+        relDirection,
+        pathCount: int(limit),
+        resultLimit: int(limit),
+      },
+      consistency,
+    );
+    return parseHttpPaths(result, minDepth, maxDepth);
+  }
+
+  async #queryHttp(
+    cypher: string,
+    parameters: Record<string, unknown>,
+    consistency: "causal" | "strong",
+  ): Promise<HttpQueryResult> {
     const http = this.#strongHttp;
     if (http === undefined) {
       throw new Error(
@@ -661,80 +709,213 @@ export class HydraDbGraphStore implements GraphStore {
       {
         method: "POST",
         headers: {
+          accept: "application/x-ndjson",
           authorization: `Bearer ${http.authToken}`,
           "content-type": "application/json",
           "x-graph-namespace": http.namespace,
         },
-        body: JSON.stringify({
+        body: stringifyHttpRequest({
           cell_id: http.cellId,
-          consistency: "strong",
-          query: [
-            "CALL algo.SPpaths({",
-            `sourceNode: ${query.from.id},`,
-            `targetNode: ${query.to.id},`,
-            `relTypes: ['${query.relationshipType}'],`,
-            `maxLen: ${maxDepth},`,
-            `relDirection: '${relDirection}',`,
-            `pathCount: ${limit},`,
-            `resultLimit: ${limit}`,
-            "}) YIELD path RETURN path",
-          ].join(" "),
+          consistency,
+          page_size: 256,
+          parameters,
+          query: cypher,
+          timeout_ms: 30_000,
         }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(35_000),
       },
     );
     const body = await response.text();
     if (!response.ok) {
       throw new Error(
-        `HydraDB strong path query failed with HTTP ${response.status}: ${body.slice(0, 500)}`,
+        `HydraDB ${consistency} HTTP query failed with HTTP ${response.status}: ${body.slice(0, 500)}`,
       );
     }
-    return parseStrongHttpPaths(body, minDepth, maxDepth);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().startsWith("application/x-ndjson")) {
+      throw new Error(
+        `HydraDB ${consistency} HTTP query returned unexpected content type ${contentType || "(missing)"}`,
+      );
+    }
+    return parseHttpQueryResult(body, consistency);
   }
 }
 
-function parseStrongHttpPaths(
+interface HttpQueryResult {
+  columns: string[];
+  rows: unknown[][];
+}
+
+type JsonObject = Record<string, unknown>;
+
+function stringifyHttpRequest(value: unknown): string {
+  return JSON.stringify(value, (_key, current: unknown) => {
+    if (!isInt(current)) return current;
+    const integer = current.toString();
+    if (!/^-?\d+$/u.test(integer)) {
+      throw new TypeError("HydraDB HTTP parameter contained an invalid integer");
+    }
+    // HydraDB accepts the full signed/unsigned 63-bit range. Raw JSON keeps
+    // the parameter numeric without first rounding it through IEEE-754.
+    return (JSON as typeof JSON & {
+      rawJSON(text: string): unknown;
+    }).rawJSON(integer);
+  });
+}
+
+function parseHttpQueryResult(
   body: string,
+  consistency: "causal" | "strong",
+): HttpQueryResult {
+  const lines = body.split(/\r?\n/u).filter((line) => line.trim() !== "");
+  if (lines.length === 0) {
+    throw new Error(`HydraDB ${consistency} HTTP query returned an empty NDJSON stream`);
+  }
+  let columns: string[] | undefined;
+  let summarySeen = false;
+  const rows: unknown[][] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    const entry = asJsonObject(parseLosslessJson(line, index + 1, consistency));
+    if (entry === undefined || typeof entry.type !== "string") {
+      throw new Error(
+        `HydraDB ${consistency} HTTP query returned an invalid NDJSON line ${index + 1}`,
+      );
+    }
+    if (summarySeen) {
+      throw new Error(
+        `HydraDB ${consistency} HTTP query returned data after its terminal summary`,
+      );
+    }
+    if (entry.type === "header") {
+      if (columns !== undefined || index !== 0 || !Array.isArray(entry.columns)) {
+        throw new Error(`HydraDB ${consistency} HTTP query returned an invalid NDJSON header`);
+      }
+      if (!entry.columns.every((column) => typeof column === "string")) {
+        throw new Error(`HydraDB ${consistency} HTTP query returned invalid column names`);
+      }
+      columns = [...entry.columns] as string[];
+      if (new Set(columns).size !== columns.length) {
+        throw new Error(`HydraDB ${consistency} HTTP query returned duplicate column names`);
+      }
+      continue;
+    }
+    if (entry.type === "row") {
+      if (columns === undefined || !Array.isArray(entry.values)) {
+        throw new Error(`HydraDB ${consistency} HTTP query returned a row before its header`);
+      }
+      if (entry.values.length !== columns.length) {
+        throw new Error(
+          `HydraDB ${consistency} HTTP query returned a row with the wrong column count`,
+        );
+      }
+      rows.push(entry.values);
+      continue;
+    }
+    if (entry.type === "summary") {
+      if (
+        columns === undefined ||
+        entry.has_more !== false ||
+        index !== lines.length - 1
+      ) {
+        throw new Error(
+          `HydraDB ${consistency} HTTP query returned an invalid terminal summary`,
+        );
+      }
+      summarySeen = true;
+      continue;
+    }
+    if (entry.type === "error") {
+      const code = typeof entry.code === "string" ? entry.code : "unknown_error";
+      const message = typeof entry.message === "string"
+        ? entry.message
+        : "HydraDB terminated the HTTP query stream";
+      throw new Error(`HydraDB ${consistency} HTTP query failed (${code}): ${message}`);
+    }
+    throw new Error(
+      `HydraDB ${consistency} HTTP query returned unknown NDJSON type ${entry.type}`,
+    );
+  }
+  if (columns === undefined) {
+    throw new Error(`HydraDB ${consistency} HTTP query omitted its NDJSON header`);
+  }
+  if (!summarySeen) {
+    throw new Error(
+      `HydraDB ${consistency} HTTP query ended without a terminal summary; refusing a possibly truncated result`,
+    );
+  }
+  return { columns, rows };
+}
+
+function parseLosslessJson(
+  line: string,
+  lineNumber: number,
+  consistency: "causal" | "strong",
+): unknown {
+  try {
+    const parseWithSource = JSON.parse as (
+      text: string,
+      reviver: (
+        key: string,
+        value: unknown,
+        context: { source?: string } | undefined,
+      ) => unknown,
+    ) => unknown;
+    return parseWithSource(line, (_key, value, context) =>
+      typeof value === "number" &&
+        typeof context?.source === "string" &&
+        /^-?\d{16,}$/u.test(context.source)
+        ? context.source
+        : value
+    );
+  } catch {
+    throw new Error(
+      `HydraDB ${consistency} HTTP query returned malformed JSON on line ${lineNumber}`,
+    );
+  }
+}
+
+function asJsonObject(value: unknown): JsonObject | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonObject
+    : undefined;
+}
+
+function parseHttpPaths(
+  result: HttpQueryResult,
   minDepth: number,
   maxDepth: number,
 ): readonly GraphPath[] {
-  // JSON has no 64-bit integer type. Quote only long integer tokens before
-  // parsing so canonical HydraTrace IDs never pass through an IEEE-754 number.
-  const lossless = body.replace(
-    /([:\[,]\s*)(-?\d{16,})(?=\s*[,}\]])/gu,
-    '$1"$2"',
-  );
-  const payload = JSON.parse(lossless) as {
-    rows?: Array<
-      Array<{
-        type?: string;
-        value?: {
-          nodes?: Array<{ id?: string | number }>;
-          relationships?: Array<{
-            properties?: {
-              hydratraceStableId?: { Integer?: string | number };
-              id?: { Integer?: string | number };
-            };
-          }>;
-        };
-      }>
-    >;
-  };
+  const pathIndex = result.columns.indexOf("path");
+  if (pathIndex < 0) throw new TypeError("HydraDB HTTP path query omitted path column");
   const paths: GraphPath[] = [];
-  for (const row of payload.rows ?? []) {
-    const cell = row[0];
-    if (cell?.type !== "path" || cell.value === undefined) continue;
-    const nodeIds = (cell.value.nodes ?? []).map((node) =>
-      stableIdText(node.id, "HTTP path node id"),
+  for (const row of result.rows) {
+    const cell = asJsonObject(row[pathIndex]);
+    if (cell?.type !== "path") {
+      throw new TypeError("HydraDB HTTP path query returned an invalid path value");
+    }
+    const value = asJsonObject(cell.value);
+    if (value === undefined) {
+      throw new TypeError("HydraDB HTTP path query returned an invalid path value");
+    }
+    const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+    const relationships = Array.isArray(value.relationships) ? value.relationships : [];
+    const nodeIds = nodes.map((node) =>
+      stableIdText(
+        asJsonObject(node)?.id as string | number | undefined,
+        "HTTP path node id",
+      ),
     );
-    const relationshipIds = (cell.value.relationships ?? []).map(
-      (relationship) =>
-        stableIdText(
-          relationship.properties?.hydratraceStableId?.Integer ??
-            relationship.properties?.id?.Integer,
-          "HTTP path relationship canonical id",
-        ),
-    );
+    const relationshipIds = relationships.map((relationship) => {
+      const properties = asJsonObject(asJsonObject(relationship)?.properties);
+      const stable = asJsonObject(properties?.hydratraceStableId) ??
+        asJsonObject(properties?.id);
+      return stableIdText(
+        stable?.Integer as string | number | undefined,
+        "HTTP path relationship canonical id",
+      );
+    });
     if (
       relationshipIds.length >= minDepth &&
       relationshipIds.length <= maxDepth &&

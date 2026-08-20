@@ -4,9 +4,10 @@
 
 Do not record until all of these are true:
 
-- the production-gate document is passed for the exact deployed commit;
+- the release evidence has no pending rows for the exact deployed commit;
 - <https://hydratrace.vercel.app> points to the Zerops engine;
-- Zerops `/ready` reports HydraDB and a healthy separate indexer;
+- <https://hydratraceengine-2d0a-4100.prg1.zerops.app/ready> reports HydraDB and
+  a healthy separate indexer;
 - two **Restore Acme demo** operations return the same 2 production services and
   3 paths without duplicate graph records;
 - demo candidate discovery returns three `LOCKFILE_VERIFIED` hash-pinned
@@ -17,6 +18,13 @@ Do not record until all of these are true:
 The Acme organization and package identities are fictional. Candidate evidence
 must visibly say `built-in-fictional-fixture`/hash-pinned cached evidence; never
 claim the fictional versions were retrieved from npm or OSV.
+
+The R2-backed engine API, Worker/fallback rollover, Vercel/Convex routing,
+signed durable scan, functional public-browser flow, and responsive/accessibility
+rerun have passed in
+[the August 21 cutover record](evidence/2026-08-21-r2-cutover.md). The final
+stricter local HydraDB gate also passed. The three-minute recording and
+submission are the only manual owner tasks.
 
 ## Script
 
@@ -115,7 +123,7 @@ Open **How HydraDB is used**.
 
 - Point to HydraDB provider and strong consistency.
 - Point to separate indexer health/freshness.
-- Mention private Object Storage and the recorded restart-persistence gate.
+- Mention the private Cloudflare R2 bucket and the recorded restart-persistence gate.
 
 > “HydraTrace turns a compromised version into an exact historical and
 > mechanically verified response plan. HydraDB is the path and temporal truth

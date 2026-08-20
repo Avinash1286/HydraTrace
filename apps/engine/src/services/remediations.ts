@@ -17,7 +17,11 @@ import {
 } from "@hydratrace/remediation";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { analyzeBlastRadiusFromGraphStore } from "./graph-catalog.js";
+import {
+  analyzeBlastRadiusFromGraphStore,
+  ensureIncidentCatalogHydrated,
+  ensureSnapshotCatalogHydrated,
+} from "./graph-catalog.js";
 import {
   discoverBuiltInDemoRemediationCandidates,
   discoverRemediationCandidates,
@@ -107,7 +111,7 @@ export function registerRemediationRoutes(
     const parameters = incidentParameters.safeParse(request.params);
     if (!parameters.success) return reply.code(400).send({ error: "INVALID_INCIDENT_ID" });
     const incidentId = parameters.data.incidentId as StableId;
-    const incident = catalog.getIncident(incidentId);
+    const incident = await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId);
     if (incident === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
     const blast = await completeBlast(graphStore, catalog, incidentId);
     if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED" });
@@ -140,7 +144,7 @@ export function registerRemediationRoutes(
       return reply.code(400).send({ error: "INVALID_CANDIDATE_DISCOVERY" });
     }
     const incidentId = parameters.data.incidentId as StableId;
-    const incident = catalog.getIncident(incidentId);
+    const incident = await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId);
     if (incident === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
     const blast = await completeBlast(graphStore, catalog, incidentId);
     if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED" });
@@ -224,7 +228,9 @@ export function registerRemediationRoutes(
     const parsed = createSchema.safeParse(request.body);
     if (!parameters.success || !parsed.success) return reply.code(400).send({ error: "INVALID_REMEDIATION" });
     const incidentId = parameters.data.incidentId as StableId;
-    if (catalog.getIncident(incidentId) === undefined) return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
+    if (await ensureIncidentCatalogHydrated(graphStore, catalog, incidentId) === undefined) {
+      return reply.code(404).send({ error: "INCIDENT_NOT_FOUND" });
+    }
     const blast = await completeBlast(graphStore, catalog, incidentId);
     if (blast.pathsTruncated) return reply.code(409).send({ error: "PATH_SET_TRUNCATED", message: "Remediation cannot solve an incomplete path set" });
     const beforePathIds = [...new Set(blast.findings.flatMap(({ displayedPaths }) => displayedPaths.map(({ pathId }) => pathId)))].sort();
@@ -278,7 +284,9 @@ export function registerRemediationRoutes(
       const coveredChanges = new Set<string>();
       let remainingPathCount = 0;
       for (const snapshotId of snapshotIds) {
-        const entry = catalog.entry(snapshotId);
+        const hydrated = catalog.entry(snapshotId) !== undefined ||
+          await ensureSnapshotCatalogHydrated(graphStore, catalog, snapshotId);
+        const entry = hydrated ? catalog.entry(snapshotId) : undefined;
         if (entry === undefined) throw new Error(`Verification snapshot ${snapshotId} was not found`);
         const inspection = await inspectStrongGraphSnapshot(graphStore, catalog, run.incidentId, snapshotId);
         for (const deployment of entry.deployments) {

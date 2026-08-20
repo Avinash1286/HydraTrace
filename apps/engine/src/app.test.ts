@@ -324,7 +324,92 @@ describe("engine ingestion API", () => {
     const incidentId = seeded.json().incident.id as string;
     await firstEngine.close();
 
-    const restartedEngine = buildEngine({ graphStore });
+    const getNodes = graphStore.getNodes.bind(graphStore);
+    let graphReadInFlight = false;
+    vi.spyOn(graphStore, "getNodes").mockImplementation(async (ids) => {
+      if (graphReadInFlight) {
+        throw new Error("restart hydration issued concurrent graph reads");
+      }
+      graphReadInFlight = true;
+      try {
+        // Preserve a scheduling boundary so Promise.all-based hydration is
+        // rejected even though the reference store itself resolves quickly.
+        await Promise.resolve();
+        return await getNodes(ids);
+      } finally {
+        graphReadInFlight = false;
+      }
+    });
+
+    const artifactDiscoveryEngine = buildEngine({
+      graphStore,
+      strongGraphReads: true,
+      allowRootRemediationSimulation: true,
+    });
+    const artifactDiscovery = await artifactDiscoveryEngine.inject({
+      method: "POST",
+      url: `/v1/incidents/${incidentId}/remediations/candidates`,
+      body: {
+        artifacts: [{
+          snapshotId: "1",
+          packageJson: "{}",
+          packageLock: "{}",
+          repositoryId: "fixture/unrelated",
+          commitSha: "unrelated",
+        }],
+      },
+    });
+    expect(artifactDiscovery.statusCode, artifactDiscovery.body).toBe(200);
+    expect(artifactDiscovery.json()).toMatchObject({
+      incidentId,
+      state: "INCONCLUSIVE",
+      complete: false,
+    });
+    await artifactDiscoveryEngine.close();
+
+    const restartedEngine = buildEngine({ graphStore, strongGraphReads: true });
+    const fixedSnapshots = (seeded.json().snapshots as Array<{ id: string; commitSha: string }>)
+      .filter(({ commitSha }) => commitSha.startsWith("4"))
+      .map(({ id }) => id);
+    const candidates = await restartedEngine.inject({
+      method: "GET",
+      url: `/v1/incidents/${incidentId}/remediations/candidates`,
+    });
+    expect(candidates.statusCode, candidates.body).toBe(200);
+    expect(candidates.json()).toMatchObject({
+      incidentId,
+      state: "READY",
+      complete: true,
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ verification: "LOCKFILE_VERIFIED" }),
+      ]),
+    });
+    const proposed = await restartedEngine.inject({
+      method: "POST",
+      url: `/v1/incidents/${incidentId}/remediations`,
+      body: { candidates: candidates.json().candidates },
+    });
+    expect(proposed.statusCode, proposed.body).toBe(201);
+    expect(proposed.json()).toMatchObject({
+      status: "PROPOSED",
+      solution: { uncoveredPathIds: [] },
+    });
+    const verified = await restartedEngine.inject({
+      method: "POST",
+      url: `/v1/remediations/${proposed.json().runId}/verify`,
+      body: { snapshotIds: fixedSnapshots },
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(verified.json()).toMatchObject({
+      status: "VERIFIED",
+      verification: {
+        level: "STRONG_GRAPH",
+        passed: true,
+        remainingPathCount: 0,
+        snapshotIds: fixedSnapshots,
+      },
+    });
+
     const blast = await restartedEngine.inject({
       method: "GET",
       url: `/v1/incidents/${incidentId}/blast-radius`,

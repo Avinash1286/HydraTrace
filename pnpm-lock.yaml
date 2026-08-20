@@ -101,8 +101,8 @@ importers:
         specifier: 5.0.0
         version: 5.0.0
       neo4j-driver:
-        specifier: 6.2.0
-        version: 6.2.0
+        specifier: 5.27.0
+        version: 5.27.0
       yauzl:
         specifier: 3.2.1
         version: 3.2.1
@@ -187,8 +187,8 @@ importers:
         specifier: workspace:*
         version: link:../graph-schema
       neo4j-driver:
-        specifier: 6.2.0
-        version: 6.2.0
+        specifier: 5.27.0
+        version: 5.27.0
 
   packages/incident-analysis:
     dependencies:
@@ -1793,15 +1793,14 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  neo4j-driver-bolt-connection@6.2.0:
-    resolution: {integrity: sha512-SEnFSBfumleDxmDAZKkjXxZ5LgL2iZSTx08sO+qXX45ZKaxZJOcg9oxwoXACXZ1RbIq3XbDfHU8I5tExanYEOA==}
+  neo4j-driver-bolt-connection@5.27.0:
+    resolution: {integrity: sha512-TNKokHcZCkyeZbHLBB+CGciWvyLdAK6tBNFHg5zRMzheVFaJjjEhsHmjwhIA+wy+8ld4Oo0/qv/pyJNRpWAj3A==}
 
-  neo4j-driver-core@6.2.0:
-    resolution: {integrity: sha512-U8PSdvDECWmCgSWyhqNNVzMONXFHWPcTd5gqi12+EDxxt0aETA0m+XCXf9H7q6qQXdisc40rUJEOcVQOu6peEA==}
+  neo4j-driver-core@5.27.0:
+    resolution: {integrity: sha512-TXZLNjtLrySRyBPBiRkQ/Ewmt4PQG0rm/Q2ZPNPqxbq1S0UVd53PQ2N6jxKiWlkrlPfrVRd2DyE8M7X9MDXxZw==}
 
-  neo4j-driver@6.2.0:
-    resolution: {integrity: sha512-9W/Tk7EyjZHtv87NFpqoIbl0mlQx8bX8phUFzAM9xmeJrRpGDvqkpdQzc11DjwzywQCdhifaZPSvokSnAp7YTg==}
-    engines: {node: '>=18.0.0'}
+  neo4j-driver@5.27.0:
+    resolution: {integrity: sha512-XCSGhQUxOzaJi+SBq/6kH9dpVZ6WTE9f8m2TxCKm2CySOSY21sZ/3n//FRWFM0X6a3sBFTOE2PNkZfxSj92G5w==}
 
   next@16.3.1:
     resolution: {integrity: sha512-hsAp0i7Rh+/dhe7DGIeN2YlpLM1DP4MNxti9EtDMtqcO612X81MvvEj388/oTce9U1EcEIOWDlGq0zRwrBKvuA==}
@@ -3309,18 +3308,18 @@ snapshots:
 
   nanoid@3.3.18: {}
 
-  neo4j-driver-bolt-connection@6.2.0:
+  neo4j-driver-bolt-connection@5.27.0:
     dependencies:
       buffer: 6.0.3
-      neo4j-driver-core: 6.2.0
+      neo4j-driver-core: 5.27.0
       string_decoder: 1.3.0
 
-  neo4j-driver-core@6.2.0: {}
+  neo4j-driver-core@5.27.0: {}
 
-  neo4j-driver@6.2.0:
+  neo4j-driver@5.27.0:
     dependencies:
-      neo4j-driver-bolt-connection: 6.2.0
-      neo4j-driver-core: 6.2.0
+      neo4j-driver-bolt-connection: 5.27.0
+      neo4j-driver-core: 5.27.0
       rxjs: 7.8.2
 
   next@16.3.1(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):

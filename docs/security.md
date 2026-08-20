@@ -69,12 +69,18 @@ fixed snapshots for every covered service and a strong HydraDB zero-path query.
 
 ## HydraDB and object storage
 
-- Keep Bolt 7687, query HTTP 8443, graph admin 9090, indexer admin 9091, and
-  Object Storage private to local loopback or the Zerops project network.
+- Keep Bolt 7687, query HTTP 8443, graph admin 9090, and indexer admin 9091
+  private to local loopback or the Zerops project network. Keep the R2 bucket
+  private and require its bucket-scoped S3 credentials for every access.
 - Only the Zerops engine connects to HydraDB; Vercel must not reach a public Bolt port.
 - Use a random 32+ character graph token and the committed pinned HydraDB digest.
-- Zerops supplies private bucket names/credentials. Never print or copy them to
-  Vercel, evidence files, source, or command history.
+- HydraDB persists to the private Cloudflare R2 bucket
+  `hydratrace-graph-production` in account
+  `59b8589f738de5e4ab643bedd3a4b0a9`. Its Object Read & Write token is scoped
+  only to that bucket and stored only in Zerops secret variables.
+- Never print or copy R2 credentials to Vercel, evidence files, source, or
+  command history. The account ID, bucket name, and S3 endpoint are identifiers,
+  not credentials.
 - Rotate any exposed credential, redeploy graph consumers, and rerun S3,
   persistence, indexer, and restart gates.
 
@@ -82,6 +88,10 @@ fixed snapshots for every covered service and a strong HydraDB zero-path query.
 
 - The Worker fails closed when its shared secret is absent/short and rejects an
   invalid bearer token.
+- An optional 32+ character rollover secret may be accepted only during a
+  coordinated engine rotation. Remove it after all callers use the primary
+  secret; a short configured rollover value fails closed, as does a missing or
+  short primary value.
 - Models receive a closed deterministic evidence set, no credentials and no
   executable tools. Output must be strict JSON and schema-valid.
 - Returned evidence references are intersected with the allowed set; a
@@ -95,6 +105,7 @@ fixed snapshots for every covered service and a strong HydraDB zero-path query.
 Keep these independent:
 
 - HydraDB graph auth token;
+- Cloudflare R2 bucket-scoped access-key pair;
 - Convex/engine `HYDRATRACE_JOB_SHARED_SECRET`;
 - Worker/engine `AI_GATEWAY_SHARED_SECRET`;
 - optional NVIDIA key.
@@ -102,6 +113,14 @@ Keep these independent:
 Use ignored local files and platform secret stores. Never place secrets in
 `NEXT_PUBLIC_*` variables. Rotate both sides of a shared-secret relationship
 and redeploy before accepting signed-flow evidence.
+
+For the 2026-08-21 release, the Convex/Zerops job secret was aligned without
+recording its value. Zerops uses the Worker primary AI secret, while the Vercel
+fallback uses an independently rotated Worker rollover secret. Convex
+production, Zerops, the Worker, and the fallback were redeployed; signed flows
+passed and an unsigned protected fallback request returned 401. Converging the
+fallback onto the primary value and removing the rollover value is a
+non-blocking hardening follow-up.
 
 ## Release checks
 
@@ -113,6 +132,10 @@ pnpm verify
 pnpm scan:fixture
 pnpm gate:hydradb
 ```
+
+The local persistence smoke wrapper allows 180 seconds for the verified cold
+restart/read path; this is a timeout ceiling, not an expected steady-state
+latency target.
 
 Also scan tracked files for credential patterns, inspect deployment logs for
 secret output, require unsigned dispatch/callback requests to return 401, verify

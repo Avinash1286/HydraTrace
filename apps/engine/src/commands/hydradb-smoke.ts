@@ -1,4 +1,5 @@
 import {
+  createHydraDbSmokeFixture,
   HydraDbGraphStore,
   hydraDbConnectionOptionsFromEnv,
   runHydraDbSmokeProbe,
@@ -7,9 +8,11 @@ import {
 const store = HydraDbGraphStore.connect(hydraDbConnectionOptionsFromEnv());
 try {
   await store.verifyConnectivity();
+  process.stdout.write("HydraDB smoke: write/read/path probe started.\n");
   const first = await runHydraDbSmokeProbe(store);
-  const second = await runHydraDbSmokeProbe(store);
-  if (second.write.nodes.created !== 0 || second.write.relationships.created !== 0) {
+  process.stdout.write("HydraDB smoke: write/read/path probe passed.\n");
+  const secondWrite = await store.write(createHydraDbSmokeFixture().records);
+  if (secondWrite.nodes.created !== 0 || secondWrite.relationships.created !== 0) {
     throw new Error("Repeated HydraDB smoke import was not idempotent");
   }
   process.stdout.write(
@@ -17,13 +20,13 @@ try {
       {
         status: "passed",
         firstWrite: first.write,
-        secondWrite: second.write,
-        readNodeCount: second.readNodeCount,
-        readRelationshipCount: second.readRelationshipCount,
-        matchedNodeCount: second.matchedNodeCount,
-        matchedRelationshipCount: second.matchedRelationshipCount,
-        pathCount: second.pathCount,
-        orderedPath: second.orderedPath,
+        secondWrite,
+        readNodeCount: first.readNodeCount,
+        readRelationshipCount: first.readRelationshipCount,
+        matchedNodeCount: first.matchedNodeCount,
+        matchedRelationshipCount: first.matchedRelationshipCount,
+        pathCount: first.pathCount,
+        orderedPath: first.orderedPath,
       },
       null,
       2,

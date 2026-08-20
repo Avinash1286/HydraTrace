@@ -7,11 +7,11 @@ zerops:
         - docker image pull quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
       envVariables:
         CLOUD_PROVIDER: aws
-        AWS_ENDPOINT: ${hydratracegraph_apiUrl}
-        AWS_BUCKET_NAME: ${hydratracegraph_bucketName}
-        AWS_ACCESS_KEY_ID: ${hydratracegraph_accessKeyId}
-        AWS_SECRET_ACCESS_KEY: ${hydratracegraph_secretAccessKey}
-        AWS_DEFAULT_REGION: us-east-1
+        AWS_ENDPOINT: https://59b8589f738de5e4ab643bedd3a4b0a9.r2.cloudflarestorage.com
+        AWS_BUCKET_NAME: hydratrace-graph-production
+        AWS_ACCESS_KEY_ID: ${r2AccessKeyId}
+        AWS_SECRET_ACCESS_KEY: ${r2SecretAccessKey}
+        AWS_DEFAULT_REGION: auto
         AWS_ALLOW_HTTP: "false"
         AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
         GRAPH_NAMESPACE: production
@@ -28,7 +28,7 @@ zerops:
         RUST_MIN_STACK: "33554432"
       initCommands:
         - install -d -m 700 /home/zerops/hydradb
-        - sh -c 'umask 077; printf "%s" "$GRAPH_AUTH_TOKEN" > /home/zerops/hydradb/auth-token'
+        - sh -c 'umask 077; rm -f /home/zerops/hydradb/auth-token; printf "%s" "$GRAPH_AUTH_TOKEN" > /home/zerops/hydradb/auth-token'
         - chmod 0444 /home/zerops/hydradb/auth-token
         - >-
           sh -c 'for api in S3v4 S3v2; do
@@ -72,11 +72,11 @@ zerops:
         - docker image pull ghcr.io/hydra-db/hydradb:0.1.1@sha256:db78309a233be54662db29744047e985a39b51c45a270d1a1f47c31a62cdb709
       envVariables:
         CLOUD_PROVIDER: aws
-        AWS_ENDPOINT: ${hydratracegraph_apiUrl}
-        AWS_BUCKET_NAME: ${hydratracegraph_bucketName}
-        AWS_ACCESS_KEY_ID: ${hydratracegraph_accessKeyId}
-        AWS_SECRET_ACCESS_KEY: ${hydratracegraph_secretAccessKey}
-        AWS_DEFAULT_REGION: us-east-1
+        AWS_ENDPOINT: https://59b8589f738de5e4ab643bedd3a4b0a9.r2.cloudflarestorage.com
+        AWS_BUCKET_NAME: hydratrace-graph-production
+        AWS_ACCESS_KEY_ID: ${hydradbnode_r2AccessKeyId}
+        AWS_SECRET_ACCESS_KEY: ${hydradbnode_r2SecretAccessKey}
+        AWS_DEFAULT_REGION: auto
         AWS_ALLOW_HTTP: "false"
         AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
         GRAPH_NAMESPACE: production
@@ -129,6 +129,7 @@ zerops:
         ENGINE_RATE_LIMIT_PER_MINUTE: "120"
         WEB_ORIGIN: https://hydratrace.vercel.app
         CONVEX_URL: https://accomplished-skunk-643.convex.cloud
+        CONVEX_SITE_URL: https://accomplished-skunk-643.convex.site
         HYDRATRACE_JOB_STATE_DIR: /var/www/.hydratrace/jobs
         HYDRATRACE_AUTO_SEED_DEMO: "false"
         HYDRADB_BOLT_URI: bolt://hydradbnode:7687
@@ -143,7 +144,7 @@ zerops:
         HYDRADB_CELL_ID: cell-0
         HYDRADB_NAMESPACE: production
         OSV_BASE_URL: https://api.osv.dev
-        AI_GATEWAY_URL: https://hydratrace-ai-gateway.abinashyadav3-141.workers.dev
+        AI_GATEWAY_URL: https://hydratrace-ai-gateway.hydratrace-ai-gateway.workers.dev
       ports:
         - port: 4100
           httpSupport: true

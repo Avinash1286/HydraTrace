@@ -6,6 +6,7 @@ runtime reachability, explainable risk, and remediation plans that are accepted
 only after a zero-path graph verification.
 
 - Public application: <https://hydratrace.vercel.app>
+- Durable Zerops-engine readiness: <https://hydratraceengine-2d0a-4100.prg1.zerops.app/ready>
 - Vercel fallback-engine health: <https://hydratrace-engine.vercel.app/ready>
 - Operator view: <https://hydratrace.vercel.app/system>
 
@@ -17,7 +18,8 @@ The first URL is the UI. Engine URLs are APIs, so link to `/ready` or
 - exact `package-lock.json` v2/v3 and `pnpm-lock.yaml` v6-v9 normalization;
 - deterministic nonnegative 63-bit IDs and provenance on every imported fact;
 - immutable snapshots, deployments, half-open time intervals, and historical replay;
-- HydraDB v0.1.1 Bolt writes/causal reads plus lossless strong HTTP path reads;
+- HydraDB v0.1.1 serialized Bolt scalar operations through the compatible
+  `neo4j-driver` 5.27.0 negotiation path, plus lossless causal/strong HTTP path reads;
 - graph-store-backed blast radius, bounded complete paths, truncation guards, and negative controls;
 - repository/ZIP source acquisition, static JavaScript/TypeScript reachability,
   CommonJS/ESM runtime evidence, and explicit dynamic unknowns;
@@ -75,7 +77,8 @@ pnpm gate:hydradb
 The gate starts pinned HydraDB, indexer, and MinIO containers; proves
 idempotency and exact counts; restarts the graph node; requires one exact
 strong-consistency three-hop path; and compares every complete path for eight
-fixed-seed graph shapes against an independent reference enumerator. To make
+fixed-seed graph shapes against an independent reference enumerator. Its
+180-second smoke wrapper accommodates the verified cold-start read path. To make
 the engine's readiness check include the local indexer, add this to `.env`:
 
 ```text
@@ -125,20 +128,34 @@ See [Security](docs/security.md) for the enforced bounds and
 | `pnpm benchmark -- --profile=large` | Exact 250k-node/1m-edge reference benchmark |
 | `pnpm cli -- --help` | Scan, incident, gate, JSON/table/SARIF CLI |
 | `pnpm exec convex dev --once` | Validate and push the development control plane |
-| `pnpm exec convex deploy --yes` | Push the production Convex deployment |
+| `pnpm exec convex deploy` | Push the production Convex deployment |
 
 ## Hosting decision
 
 The implementation deliberately varies from `plan.md` in two approved ways:
 
 1. The public web application is on Vercel, with a stateless Vercel engine kept
-   as a fallback. The durable graph-backed engine belongs beside HydraDB in Zerops.
+   as a fallback. The durable graph-backed engine belongs beside HydraDB in Zerops;
+   HydraDB persists to the private Cloudflare R2 bucket
+   `hydratrace-graph-production` in account
+   `59b8589f738de5e4ab643bedd3a4b0a9`.
 2. There are no GitHub Actions. Verification runs locally and in the Vercel
    build/deploy path; the CLI remains available for operator-controlled CI.
 
 Raw HydraDB Bolt/HTTP/admin ports and object storage stay private. Vercel never
 connects to a publicly exposed Bolt port. See [Deployment](docs/deployment.md)
 and [Vercel notes](docs/vercel.md) for the exact topology and environment matrix.
+
+The live cutover is complete. The Vercel web application points to the
+R2-backed Zerops engine, the Worker and stateless Vercel fallback were
+redeployed with the configured primary/rollover credentials, and Convex
+production dispatches to Zerops. A
+production scan completed on its first attempt with exactly 11 monotonic events,
+and the public browser passed the graph, timeline, neighborhood, Copilot,
+strong-remediation, report-download, mobile-overflow, and accessibility flows.
+The final local HydraDB gate also passed. The only remaining manual owner work is the
+three-minute video and submission. See the
+[August 21 R2 cutover evidence](docs/evidence/2026-08-21-r2-cutover.md).
 
 ## Documentation
 
